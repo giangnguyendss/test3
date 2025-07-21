@@ -1,0 +1,51 @@
+Feature: Modify Account table to include new columns from patient_addition_field.xlsx
+
+  Background:
+    Given an existing Account table with columns from patient_reg.xlsx
+
+  Scenario: Create Account table if not exists
+    Given the Account table schema from patient_reg.xlsx
+    When I execute the SQL development script for table creation
+    Then the Account table should be created with existing columns and new columns added
+
+  Scenario: Drop Account table if already exists
+    Given the Account table exists
+    When I execute the SQL script to drop the table
+    Then the Account table should be removed from the database
+
+  Scenario: Add new columns to Account table from patient_addition_field.xlsx
+    Given an existing Account table
+    When I execute the SQL script to alter the table
+    Then the following columns should be added:
+      | Column Name                   | Datatype |
+      | Operational_Status            | string   |
+      | Provider_Network_Type         | string   |
+      | Regulatory_Compliance_Code    | string   |
+      | Tax_Identification_Number     | string   |
+
+  Scenario Outline: Validate data-driven column addition in Account table
+    Given the "<column_name>" column is not present in Account table
+    When I alter the Account table to add "<column_name>" with "<data_type>"
+    Then the Account table should include "<column_name>" of type "<data_type>"
+
+    Examples:
+      | column_name                 | data_type |
+      | Operational_Status          | string    |
+      | Provider_Network_Type       | string    |
+      | Regulatory_Compliance_Code  | string    |
+      | Tax_Identification_Number   | string    |
+
+  Scenario: Verify error handling for duplicate columns
+    Given the "Operational_Status" column already exists in Account table
+    When I attempt to add "Operational_Status" column again
+    Then an error message "Column already exists: Operational_Status" should be raised
+
+  Scenario: Validate SQL code for Account table creation and alteration
+    Given the requirement to use Databricks SQL
+    When I write the SQL code to create and alter Account table
+    Then the SQL code should adhere to Databricks syntax and create or alter the table with specified columns
+
+  Scenario: Ensure comprehensive acceptance criteria adherence
+    Given the requirements to modify both existing and new columns in Account table
+    When I execute all defined scenarios
+    Then all acceptance criteria should be met and validated for correct implementation
