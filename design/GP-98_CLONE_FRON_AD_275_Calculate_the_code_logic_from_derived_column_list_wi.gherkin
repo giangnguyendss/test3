@@ -2,164 +2,117 @@ Feature: Enrich patient_therapy_shipment table with derived metrics for adherenc
 
   Background:
     Given the source table "purgo_playground.patient_therapy_shipment" exists in Unity Catalog
-    And the output table "purgo_playground.enriched_patient_therapy_shipment" exists with the specified schema
-    And the source table contains the columns: product, ship_date, days_supply, qty, treatment_id, dob, first_ship_date, refill_status, patient_id, ship_type, shipment_arrived_status, delivery_ontime, calctime
-    And the output table contains all columns from the source table except calctime, plus the 12 derived columns: shipment_expiry, discontinuation_date, days_until_next_ship, days_since_last_fill, expected_refill_date, prior_ship, days_between, days_since_supply_out, age, age_at_first_ship, latest_therapy_ships, discontinuation_type
+    And the following columns are present in the source table:
+      | product | ship_date | days_supply | qty | treatment_id | dob | first_ship_date | refill_status | patient_id | ship_type | shipment_arrived_status | delivery_ontime |
+    And the following derived columns must be calculated:
+      | shipment_expiry | discontinuation_date | days_until_next_ship | days_since_last_fill | expected_refill_date | prior_ship | days_between | days_since_supply_out | age | age_at_first_ship | latest_therapy_ships | discontinuation_type |
+    And the output table "purgo_playground.enriched_patient_therapy_shipment" must contain all source and derived columns
+    And all date calculations must use UTC timezone
+    And all arithmetic operations on days_supply and qty must cast values to integer
+    And NULL or missing values in source columns must be handled as specified in validation rules
 
-  Scenario Outline: Successful enrichment of patient_therapy_shipment with all derived columns (happy path)
-    Given a patient_therapy_shipment record with:
-      | product   | ship_date   | days_supply | qty | treatment_id | dob        | first_ship_date | refill_status      | patient_id | ship_type   | shipment_arrived_status | delivery_ontime | calctime             |
-      | <product> | <ship_date> | <days_supply> | <qty> | <treatment_id> | <dob> | <first_ship_date> | <refill_status> | <patient_id> | <ship_type> | <shipment_arrived_status> | <delivery_ontime> | <calctime> |
-    When the enrichment process runs
-    Then the output table "enriched_patient_therapy_shipment" should contain a record with:
-      | product   | ship_date   | days_supply | qty | treatment_id | dob        | first_ship_date | refill_status      | patient_id | ship_type   | shipment_arrived_status | delivery_ontime | shipment_expiry | discontinuation_date | days_until_next_ship | days_since_last_fill | expected_refill_date | prior_ship | days_between | days_since_supply_out | age | age_at_first_ship | latest_therapy_ships | discontinuation_type |
-      | <product> | <ship_date> | <days_supply> | <qty> | <treatment_id> | <dob> | <first_ship_date> | <refill_status> | <patient_id> | <ship_type> | <shipment_arrived_status> | <delivery_ontime> | <shipment_expiry> | <discontinuation_date> | <days_until_next_ship> | <days_since_last_fill> | <expected_refill_date> | <prior_ship> | <days_between> | <days_since_supply_out> | <age> | <age_at_first_ship> | <latest_therapy_ships> | <discontinuation_type> |
-
-    Examples:
-      | product | ship_date   | days_supply | qty | treatment_id | dob        | first_ship_date | refill_status      | patient_id | ship_type   | shipment_arrived_status | delivery_ontime | calctime             | shipment_expiry | discontinuation_date | days_until_next_ship | days_since_last_fill | expected_refill_date | prior_ship | days_between | days_since_supply_out | age | age_at_first_ship | latest_therapy_ships | discontinuation_type |
-      | DrugA   | 2024-01-01  | 21          | 63  | TREAT123     | 1980-06-15 | 2023-12-01      | DC - Standard      | PAT001     | commercial  | arrived                 | yes             | 2024-01-15T00:00:00Z | 2024-01-22      | 2024-04-22          | 8                   | 15                  | 2024-01-23           | NULL       | NULL         | NULL                  | 43  | 44                | 1                    | STANDARD             |
-      | DrugB   | 2024-02-10  | NULL        | 90  | TREAT456     | 1975-03-10 | 2024-02-10      | DC-PERMANENT       | PAT002     | commercial  | arrived                 | no              | 2024-02-20T00:00:00Z | 2024-03-11      | 2024-06-10          | 20                  | 10                  | 2024-03-12           | NULL       | NULL         | NULL                  | 49  | 49                | 1                    | PERMANENT            |
-      | DrugC   | 2024-03-01  | 14          | 42  | TREAT789     | 2000-01-01 | 2024-03-01      | NULL               | PAT003     | commercial  | arrived                 | yes             | 2024-03-10T00:00:00Z | 2024-03-15      | 2024-06-14          | 6                   | 9                   | 2024-03-16           | NULL       | NULL         | NULL                  | 24  | 24                | 1                    | NULL                 |
-
-  Scenario Outline: Derived column calculation with missing days_supply (fallback to qty logic)
-    Given a patient_therapy_shipment record with days_supply as NULL and qty as <qty>
-    When the enrichment process runs
-    Then the shipment_expiry should be DATE_ADD(ship_date, cast(qty / 3 * 7 as int))
-    And the discontinuation_date should be DATE_ADD(shipment_expiry, 91)
-    And the days_until_next_ship should be (DATEDIFF(shipment_expiry, calctime) + 1)
-    And the expected_refill_date should be DATE_ADD(calctime, days_until_next_ship)
-    And the output table should contain the correct derived values
-
-    Examples:
-      | ship_date   | days_supply | qty | calctime             | shipment_expiry | discontinuation_date | days_until_next_ship | expected_refill_date |
-      | 2024-01-01  | NULL        | 90  | 2024-01-10T00:00:00Z | 2024-01-22      | 2024-04-22          | 13                   | 2024-01-23           |
-
-  Scenario Outline: Derived column calculation with missing qty and days_supply (error scenario)
-    Given a patient_therapy_shipment record with days_supply as NULL and qty as NULL
-    When the enrichment process runs
-    Then the shipment_expiry should be NULL
-    And the discontinuation_date should be NULL
-    And the days_until_next_ship should be NULL
-    And the expected_refill_date should be NULL
-    And the output table should contain NULL for all derived columns dependent on days_supply or qty
+  Scenario Outline: Successful enrichment of patient_therapy_shipment with valid data
+    Given a patient_therapy_shipment record with the following values:
+      | product   | ship_date   | days_supply | qty | treatment_id | dob        | first_ship_date | refill_status      | patient_id | ship_type   | shipment_arrived_status | delivery_ontime |
+      | <product> | <ship_date> | <days_supply> | <qty> | <treatment_id> | <dob> | <first_ship_date> | <refill_status> | <patient_id> | <ship_type> | <shipment_arrived_status> | <delivery_ontime> |
+    And the calculation time '{calctime}' is set to <calctime>
+    When the enrichment process is executed
+    Then the output record must have:
+      | shipment_expiry        | DATE_ADD(ship_date, cast(COALESCE(days_supply, qty / 3*7 ) as int)) |
+      | discontinuation_date   | DATE_ADD(shipment_expiry, 91)                                       |
+      | days_until_next_ship   | DATEDIFF(shipment_expiry, '{calctime}') + 1                         |
+      | days_since_last_fill   | DATEDIFF('{calctime}', ship_date) + 1                               |
+      | expected_refill_date   | DATE_ADD('{calctime}', days_until_next_ship)                        |
+      | prior_ship             | LAG(ship_date) OVER (PARTITION BY treatment_id ORDER BY ship_date)  |
+      | days_between           | DATEDIFF(ship_date, prior_ship)                                     |
+      | days_since_supply_out  | CASE WHEN DATEDIFF('{calctime}', shipment_expiry) >= 0 THEN DATEDIFF('{calctime}', shipment_expiry) ELSE NULL |
+      | age                    | DATEDIFF(YEAR, dob, '{calctime}')                                   |
+      | age_at_first_ship      | ROUND(DATEDIFF(DAY, dob, first_ship_date) / 365.0, 0)               |
+      | latest_therapy_ships   | COUNT(ship_date) OVER (PARTITION BY patient_id, treatment_id WHERE ship_type='commercial') |
+      | discontinuation_type   | CASE WHEN refill_status = 'DC - Standard' THEN 'STANDARD' WHEN refill_status = 'DC-PERMANENT' THEN 'PERMANENT' ELSE NULL |
+    And all directly sourced columns are copied as-is
+    And the output is written to "purgo_playground.enriched_patient_therapy_shipment" or displayed as a result set
 
     Examples:
-      | ship_date   | days_supply | qty | calctime             |
-      | 2024-01-01  | NULL        | NULL| 2024-01-10T00:00:00Z |
+      | product | ship_date   | days_supply | qty | treatment_id | dob        | first_ship_date | refill_status      | patient_id | ship_type   | shipment_arrived_status | delivery_ontime | calctime    |
+      | DrugA   | 2024-01-01  | 28          | 84  | TREAT123     | 1980-05-10 | 2024-01-01      | DC - Standard      | PAT001     | commercial  | arrived                | yes             | 2024-02-01  |
+      | DrugB   | 2024-03-15  |             | 63  | TREAT456     | 1975-12-20 | 2024-03-15      | DC-PERMANENT       | PAT002     | commercial  | arrived                | no              | 2024-04-01  |
+      | DrugC   | 2024-05-10  | 30          | 90  | TREAT789     | 1990-07-01 | 2024-05-10      | ongoing            | PAT003     | sample      | pending                | yes             | 2024-06-01  |
 
-  Scenario Outline: Calculation of prior_ship and days_between for multiple shipments per treatment_id
-    Given multiple patient_therapy_shipment records for the same treatment_id ordered by ship_date
-    When the enrichment process runs
-    Then for each record after the first, prior_ship should be the ship_date of the previous shipment for the same treatment_id
-    And days_between should be DATEDIFF(ship_date, prior_ship)
-    And for the first record, prior_ship and days_between should be NULL
-
-    Examples:
-      | treatment_id | ship_date   | prior_ship  | days_between |
-      | TREAT123     | 2024-01-01  | NULL        | NULL         |
-      | TREAT123     | 2024-01-22  | 2024-01-01  | 21           |
-      | TREAT123     | 2024-02-12  | 2024-01-22  | 21           |
-
-  Scenario Outline: Calculation of latest_therapy_ships for commercial shipments
-    Given multiple patient_therapy_shipment records for the same patient_id and treatment_id with varying ship_type
-    When the enrichment process runs
-    Then latest_therapy_ships should be the count of records with ship_type = 'commercial' for that patient_id and treatment_id
+  Scenario Outline: Handling NULL or missing values in days_supply, qty, dob, or first_ship_date
+    Given a patient_therapy_shipment record with the following values:
+      | product   | ship_date   | days_supply | qty | treatment_id | dob        | first_ship_date | refill_status      | patient_id | ship_type   | shipment_arrived_status | delivery_ontime |
+      | <product> | <ship_date> | <days_supply> | <qty> | <treatment_id> | <dob> | <first_ship_date> | <refill_status> | <patient_id> | <ship_type> | <shipment_arrived_status> | <delivery_ontime> |
+    And the calculation time '{calctime}' is set to <calctime>
+    When the enrichment process is executed
+    Then if days_supply and qty are both NULL or non-numeric, shipment_expiry, discontinuation_date, days_until_next_ship, expected_refill_date, days_since_supply_out are set to NULL
+    And if dob or first_ship_date is NULL, age and age_at_first_ship are set to NULL
+    And if prior_ship is NULL (first shipment), days_between is set to NULL
+    And all other columns are calculated as per logic or set to NULL if dependent values are missing
 
     Examples:
-      | patient_id | treatment_id | ship_type   | expected_latest_therapy_ships |
-      | PAT001     | TREAT123     | commercial  | 2                             |
-      | PAT001     | TREAT123     | sample      | 2                             |
-      | PAT001     | TREAT123     | commercial  | 2                             |
+      | product | ship_date   | days_supply | qty | treatment_id | dob        | first_ship_date | refill_status      | patient_id | ship_type   | shipment_arrived_status | delivery_ontime | calctime    |
+      | DrugD   | 2024-01-01  |             |     | TREAT999     |            | 2024-01-01      | DC - Standard      | PAT004     | commercial  | arrived                | yes             | 2024-02-01  |
+      | DrugE   | 2024-03-15  | 30          |     | TREAT888     | 1985-11-11 |                 | DC-PERMANENT       | PAT005     | commercial  | arrived                | no              | 2024-04-01  |
+      | DrugF   | 2024-05-10  |             |     | TREAT777     |            |                 | ongoing            | PAT006     | sample      | pending                | yes             | 2024-06-01  |
 
-  Scenario Outline: Calculation of discontinuation_type based on refill_status
-    Given a patient_therapy_shipment record with refill_status as <refill_status>
-    When the enrichment process runs
-    Then discontinuation_type should be <expected_discontinuation_type>
-
-    Examples:
-      | refill_status      | expected_discontinuation_type |
-      | DC - Standard      | STANDARD                      |
-      | DC-PERMANENT       | PERMANENT                     |
-      | NULL               | NULL                          |
-      | Other              | NULL                          |
-
-  Scenario Outline: Calculation of age and age_at_first_ship
-    Given a patient_therapy_shipment record with dob as <dob> and calctime as <calctime>
-    And first_ship_date as <first_ship_date>
-    When the enrichment process runs
-    Then age should be the integer number of years between dob and calctime
-    And age_at_first_ship should be the rounded integer of (DATEDIFF(DAY, dob, first_ship_date) / 365.0)
+  Scenario Outline: Error handling for non-numeric days_supply or qty
+    Given a patient_therapy_shipment record with days_supply or qty containing non-numeric values
+    And the calculation time '{calctime}' is set to <calctime>
+    When the enrichment process is executed
+    Then the process must set all derived columns dependent on days_supply or qty to NULL
+    And an error message "Invalid days_supply or qty: non-numeric value" is logged for the record
 
     Examples:
-      | dob        | calctime             | first_ship_date | age | age_at_first_ship |
-      | 1980-06-15 | 2024-01-15T00:00:00Z | 2023-12-01      | 43  | 44                |
-      | 2000-01-01 | 2024-03-10T00:00:00Z | 2024-03-01      | 24  | 24                |
+      | product | ship_date   | days_supply | qty | treatment_id | dob        | first_ship_date | refill_status      | patient_id | ship_type   | shipment_arrived_status | delivery_ontime | calctime    |
+      | DrugG   | 2024-01-01  | abc         | 84  | TREAT555     | 1980-05-10 | 2024-01-01      | DC - Standard      | PAT007     | commercial  | arrived                | yes             | 2024-02-01  |
+      | DrugH   | 2024-03-15  | 30          | xyz | TREAT444     | 1975-12-20 | 2024-03-15      | DC-PERMANENT       | PAT008     | commercial  | arrived                | no              | 2024-04-01  |
 
-  Scenario Outline: Handling of NULL or missing values in key fields (error scenario)
-    Given a patient_therapy_shipment record with NULL in <field>
-    When the enrichment process runs
-    Then all derived columns dependent on <field> should be NULL
+  Scenario: Calculation of latest_therapy_ships for commercial shipments only
+    Given multiple patient_therapy_shipment records for the same patient_id and treatment_id
+    And some records have ship_type = 'commercial' and others have ship_type != 'commercial'
+    When the enrichment process is executed
+    Then latest_therapy_ships is the count of records with ship_type = 'commercial' for the patient_id and treatment_id
+
+  Scenario Outline: Discontinuation type logic
+    Given a patient_therapy_shipment record with refill_status = <refill_status>
+    When the enrichment process is executed
+    Then discontinuation_type is set to <expected_discontinuation_type>
 
     Examples:
-      | field         |
-      | ship_date     |
-      | dob           |
-      | first_ship_date|
+      | refill_status     | expected_discontinuation_type |
+      | DC - Standard     | STANDARD                      |
+      | DC-PERMANENT      | PERMANENT                     |
+      | ongoing           | NULL                          |
+      |                   | NULL                          |
 
-  Scenario: Data type alignment and output schema validation
-    Given the enrichment process completes
-    Then the output table "enriched_patient_therapy_shipment" should have columns with the following data types:
-      | Column Name                | Data Type |
-      | product                    | string    |
-      | ship_date                  | date      |
-      | days_supply                | string    |
-      | qty                        | string    |
-      | treatment_id               | string    |
-      | dob                        | date      |
-      | first_ship_date            | date      |
-      | refill_status              | string    |
-      | patient_id                 | string    |
-      | ship_type                  | string    |
-      | shipment_arrived_status    | string    |
-      | delivery_ontime            | string    |
-      | shipment_expiry            | date      |
-      | discontinuation_date       | date      |
-      | days_until_next_ship       | bigint    |
-      | days_since_last_fill       | bigint    |
-      | expected_refill_date       | date      |
-      | prior_ship                 | date      |
-      | days_between               | bigint    |
-      | days_since_supply_out      | bigint    |
-      | age                        | bigint    |
-      | age_at_first_ship          | bigint    |
-      | latest_therapy_ships       | bigint    |
-      | discontinuation_type       | string    |
+  Scenario: Output format and destination
+    Given the enrichment process completes successfully
+    Then the output must be written to "purgo_playground.enriched_patient_therapy_shipment" with all specified columns and data types
+    And the output must be available for downstream analytics teams
 
-  Scenario: Output table contains all records from source table
-    Given the enrichment process runs
-    Then the output table "enriched_patient_therapy_shipment" should contain the same number of records as the source table "patient_therapy_shipment"
+  Scenario: Date standardization
+    Given all date fields in the source table
+    When the enrichment process is executed
+    Then all date calculations must use UTC timezone
+    And all output date fields must be in 'yyyy-MM-dd' format
 
-  Scenario: Output table is overwritten on each enrichment run
-    Given the enrichment process is triggered
-    When the process completes
-    Then the output table "enriched_patient_therapy_shipment" should contain only the latest enriched data
+  Scenario: Validation of required columns in source table
+    Given the source table "purgo_playground.patient_therapy_shipment"
+    When the enrichment process is executed
+    Then if any required column is missing, the process must fail with error message "Missing required column: <column_name>"
 
-  Scenario: No join with other tables is performed
-    Given the enrichment process runs
-    Then only data from "patient_therapy_shipment" is used for all calculations
+  Scenario: Handling of NULLs in non-derived columns
+    Given a patient_therapy_shipment record with NULL values in non-derived columns
+    When the enrichment process is executed
+    Then the NULL values are preserved in the output table
 
-  Scenario: Partitioning and indexing are not required for the output table
-    Given the enrichment process runs
-    Then the output table "enriched_patient_therapy_shipment" should not be partitioned or indexed unless specified by downstream requirements
+  Scenario: No join with external tables
+    Given all required fields are present in "patient_therapy_shipment"
+    When the enrichment process is executed
+    Then no join with external tables is performed
 
-  Scenario: Error handling for invalid data types
-    Given a patient_therapy_shipment record with non-numeric days_supply or qty
-    When the enrichment process runs
-    Then all derived columns dependent on days_supply or qty should be NULL
-    And an error message "Invalid numeric value in days_supply or qty" should be logged
-
-  Scenario: Error handling for missing calctime
-    Given a patient_therapy_shipment record with calctime as NULL
-    When the enrichment process runs
-    Then all derived columns dependent on calctime should be NULL
-    And an error message "Missing calctime for record" should be logged
+  Scenario: Display result if output table is not specified
+    Given the output table is not specified
+    When the enrichment process is executed
+    Then the enriched result set is displayed to the user
