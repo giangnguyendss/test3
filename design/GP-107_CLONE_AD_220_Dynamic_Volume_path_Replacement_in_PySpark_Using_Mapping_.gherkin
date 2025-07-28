@@ -1,0 +1,129 @@
+Feature: Update Pyspark script volume paths using volume mapping sheet
+
+  The system must update only the volume paths in pyspark_script.py by replacing old paths with new paths as specified in volume_mapping_sheet.xlsx. All other script logic and content must remain unchanged. The mapping is provided as an Excel file with columns: old_volume_path, new_volume_path.
+
+  Background:
+    Given the pyspark_script.py file exists and is readable
+    And the volume_mapping_sheet.xlsx file exists at the specified location
+    And the mapping sheet contains columns "old_volume_path" and "new_volume_path"
+    And the mapping sheet contains the following mappings:
+      | old_volume_path                                                                 | new_volume_path                                                                                   |
+      | /Volumes/agilisium_playground/purgo_playground/de_dq/AD-218/biomarker_readings.csv         | /Volumes/agilisium_playground/purgo_playground/de_dq/clinical_trail/19_03_2025_Biomarker.csv         |
+      | /Volumes/agilisium_playground/purgo_playground/de_dq/AD-218/patient_demographics.csv        | /Volumes/agilisium_playground/purgo_playground/de_dq/clinical_trail/19_03_2025_Patient_Demographics.csv |
+      | /Volumes/agilisium_playground/purgo_playground/de_dq/AD-218/site_details.csv                | /Volumes/agilisium_playground/purgo_playground/de_dq/clinical_trail/19_03_2025_Site_Data.csv           |
+
+  Scenario Outline: Replace volume paths in pyspark_script.py using mapping sheet (happy path)
+    Given pyspark_script.py contains the volume path "<old_volume_path>"
+    When the update logic is executed
+    Then "<old_volume_path>" in pyspark_script.py is replaced with "<new_volume_path>"
+    And all other content in pyspark_script.py remains unchanged
+
+    Examples:
+      | old_volume_path                                                                 | new_volume_path                                                                                   |
+      | /Volumes/agilisium_playground/purgo_playground/de_dq/AD-218/biomarker_readings.csv         | /Volumes/agilisium_playground/purgo_playground/de_dq/clinical_trail/19_03_2025_Biomarker.csv         |
+      | /Volumes/agilisium_playground/purgo_playground/de_dq/AD-218/patient_demographics.csv        | /Volumes/agilisium_playground/purgo_playground/de_dq/clinical_trail/19_03_2025_Patient_Demographics.csv |
+      | /Volumes/agilisium_playground/purgo_playground/de_dq/AD-218/site_details.csv                | /Volumes/agilisium_playground/purgo_playground/de_dq/clinical_trail/19_03_2025_Site_Data.csv           |
+
+  Scenario: Do not change volume paths not present in mapping sheet
+    Given pyspark_script.py contains a volume path "/Volumes/agilisium_playground/purgo_playground/de_dq/AD-218/unknown_file.csv"
+    And "/Volumes/agilisium_playground/purgo_playground/de_dq/AD-218/unknown_file.csv" is not present in the mapping sheet
+    When the update logic is executed
+    Then "/Volumes/agilisium_playground/purgo_playground/de_dq/AD-218/unknown_file.csv" remains unchanged in pyspark_script.py
+
+  Scenario: Mapping sheet is missing required columns
+    Given the mapping sheet does not contain both "old_volume_path" and "new_volume_path" columns
+    When the update logic is executed
+    Then an error is raised with message "Mapping sheet must contain columns: old_volume_path, new_volume_path"
+
+  Scenario: Mapping sheet is missing
+    Given the mapping sheet file does not exist at the specified location
+    When the update logic is executed
+    Then an error is raised with message "Mapping sheet not found at specified location"
+
+  Scenario: pyspark_script.py is missing
+    Given the pyspark_script.py file does not exist at the specified location
+    When the update logic is executed
+    Then an error is raised with message "pyspark_script.py not found at specified location"
+
+  Scenario: No volume paths in script match mapping sheet
+    Given pyspark_script.py does not contain any volume paths present in the mapping sheet
+    When the update logic is executed
+    Then pyspark_script.py remains unchanged
+
+  Scenario: Multiple occurrences of the same old volume path
+    Given pyspark_script.py contains the volume path "/Volumes/agilisium_playground/purgo_playground/de_dq/AD-218/biomarker_readings.csv" in multiple locations
+    When the update logic is executed
+    Then all occurrences of "/Volumes/agilisium_playground/purgo_playground/de_dq/AD-218/biomarker_readings.csv" are replaced with "/Volumes/agilisium_playground/purgo_playground/de_dq/clinical_trail/19_03_2025_Biomarker.csv"
+
+  Scenario: Volume path substrings should not be replaced
+    Given pyspark_script.py contains the string "/Volumes/agilisium_playground/purgo_playground/de_dq/AD-218/biomarker_readings.csv_extra"
+    And "/Volumes/agilisium_playground/purgo_playground/de_dq/AD-218/biomarker_readings.csv_extra" is not present in the mapping sheet
+    When the update logic is executed
+    Then "/Volumes/agilisium_playground/purgo_playground/de_dq/AD-218/biomarker_readings.csv_extra" remains unchanged in pyspark_script.py
+
+  Scenario: Mapping sheet contains duplicate old_volume_path entries
+    Given the mapping sheet contains duplicate entries for "old_volume_path"
+    When the update logic is executed
+    Then an error is raised with message "Duplicate old_volume_path entries found in mapping sheet"
+
+  Scenario: Mapping sheet contains empty new_volume_path
+    Given the mapping sheet contains a row where "new_volume_path" is empty for a given "old_volume_path"
+    When the update logic is executed
+    Then an error is raised with message "new_volume_path cannot be empty for old_volume_path: <old_volume_path>"
+
+  Scenario: Mapping sheet contains empty old_volume_path
+    Given the mapping sheet contains a row where "old_volume_path" is empty
+    When the update logic is executed
+    Then an error is raised with message "old_volume_path cannot be empty in mapping sheet"
+
+  Scenario: Output script format validation
+    Given the update logic is executed successfully
+    Then the output pyspark_script.py contains all original code and comments except for the updated volume paths
+    And the output script is valid Python syntax
+
+  Scenario: Volume path replacement is case-sensitive
+    Given pyspark_script.py contains the volume path "/Volumes/Agilisium_Playground/purgo_playground/de_dq/AD-218/biomarker_readings.csv" (different case)
+    And the mapping sheet contains "/Volumes/agilisium_playground/purgo_playground/de_dq/AD-218/biomarker_readings.csv" (lowercase)
+    When the update logic is executed
+    Then "/Volumes/Agilisium_Playground/purgo_playground/de_dq/AD-218/biomarker_readings.csv" remains unchanged in pyspark_script.py
+
+  Scenario: Mapping sheet contains whitespace in paths
+    Given the mapping sheet contains leading or trailing whitespace in "old_volume_path" or "new_volume_path"
+    When the update logic is executed
+    Then whitespace is trimmed before performing replacements
+
+  Scenario: Mapping sheet contains non-CSV file paths
+    Given the mapping sheet contains a mapping for a non-CSV file path
+    And pyspark_script.py contains that non-CSV file path
+    When the update logic is executed
+    Then the non-CSV file path is replaced according to the mapping
+
+  Scenario: Mapping sheet contains special characters in paths
+    Given the mapping sheet contains a mapping with special characters in "old_volume_path" or "new_volume_path"
+    And pyspark_script.py contains the corresponding "old_volume_path"
+    When the update logic is executed
+    Then the special character path is replaced correctly
+
+  Scenario: Mapping sheet contains relative paths
+    Given the mapping sheet contains a mapping with a relative "old_volume_path"
+    And pyspark_script.py contains the corresponding relative path
+    When the update logic is executed
+    Then the relative path is replaced according to the mapping
+
+  Scenario: Mapping sheet contains absolute and relative paths for the same file
+    Given the mapping sheet contains both absolute and relative "old_volume_path" entries for the same file
+    And pyspark_script.py contains both forms
+    When the update logic is executed
+    Then each form is replaced according to its mapping
+
+  Scenario: Mapping sheet contains paths with environment variables
+    Given the mapping sheet contains a mapping with environment variables in "old_volume_path" or "new_volume_path"
+    And pyspark_script.py contains the corresponding "old_volume_path"
+    When the update logic is executed
+    Then the environment variable path is replaced according to the mapping
+
+  Scenario: Mapping sheet contains paths with Unicode characters
+    Given the mapping sheet contains a mapping with Unicode characters in "old_volume_path" or "new_volume_path"
+    And pyspark_script.py contains the corresponding "old_volume_path"
+    When the update logic is executed
+    Then the Unicode path is replaced according to the mapping
