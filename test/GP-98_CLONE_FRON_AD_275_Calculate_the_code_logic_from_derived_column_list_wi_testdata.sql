@@ -1,409 +1,636 @@
--- Test Data Generation for purgo_playground.patient_therapy_shipment
--- Covers: happy path, edge, error, NULL, special/multibyte chars, data type alignment
+-- Test Data Generation for purgo_playground.enriched_patient_therapy_shipment
+-- Includes happy path, edge, error, NULL, and special character scenarios
 
 WITH test_data AS (
   SELECT
-    -- Happy path: all fields populated, valid numeric days_supply/qty, standard scenario
+    -- Happy path: all fields present, numeric days_supply and qty
     'DrugA' AS product,
-    DATE'2024-01-01' AS ship_date,
-    '21' AS days_supply,
-    63 AS qty,
+    DATE('2024-01-01') AS ship_date,
+    '28' AS days_supply,
+    '84' AS qty,
     'TREAT123' AS treatment_id,
-    DATE'1980-06-15' AS dob,
-    DATE'2023-12-01' AS first_ship_date,
+    DATE('1980-05-10') AS dob,
+    DATE('2024-01-01') AS first_ship_date,
     'DC - Standard' AS refill_status,
     'PAT001' AS patient_id,
     'commercial' AS ship_type,
     'arrived' AS shipment_arrived_status,
     'yes' AS delivery_ontime,
-    TIMESTAMP'2024-01-15T00:00:00.000+0000' AS calctime
+    DATE('2024-01-29') AS shipment_expiry,
+    DATE('2024-04-29') AS discontinuation_date,
+    28 AS days_until_next_ship,
+    32 AS days_since_last_fill,
+    DATE('2024-01-29') AS expected_refill_date,
+    NULL AS prior_ship,
+    NULL AS days_between,
+    NULL AS days_since_supply_out,
+    44 AS age,
+    44 AS age_at_first_ship,
+    2 AS latest_therapy_ships,
+    'STANDARD' AS discontinuation_type
   UNION ALL
-    -- Happy path: days_supply NULL, qty fallback logic
-    SELECT
+  -- Happy path: days_supply NULL, qty present
+  SELECT
     'DrugB',
-    DATE'2024-02-10',
+    DATE('2024-03-15'),
     NULL,
-    90,
+    '63',
     'TREAT456',
-    DATE'1975-03-10',
-    DATE'2024-02-10',
+    DATE('1975-12-20'),
+    DATE('2024-03-15'),
     'DC-PERMANENT',
     'PAT002',
     'commercial',
     'arrived',
     'no',
-    TIMESTAMP'2024-02-20T00:00:00.000+0000'
+    DATE('2024-03-29'),
+    DATE('2024-06-28'),
+    29,
+    18,
+    DATE('2024-03-29'),
+    NULL,
+    NULL,
+    NULL,
+    48,
+    48,
+    1,
+    'PERMANENT'
   UNION ALL
-    -- Happy path: all fields, refill_status NULL
-    SELECT
+  -- Happy path: sample shipment, not commercial
+  SELECT
     'DrugC',
-    DATE'2024-03-01',
-    '14',
-    42,
+    DATE('2024-05-10'),
+    '30',
+    '90',
     'TREAT789',
-    DATE'2000-01-01',
-    DATE'2024-03-01',
-    NULL,
+    DATE('1990-07-01'),
+    DATE('2024-05-10'),
+    'ongoing',
     'PAT003',
-    'commercial',
-    'arrived',
+    'sample',
+    'pending',
     'yes',
-    TIMESTAMP'2024-03-10T00:00:00.000+0000'
+    DATE('2024-06-09'),
+    DATE('2024-09-08'),
+    30,
+    22,
+    DATE('2024-06-09'),
+    NULL,
+    NULL,
+    NULL,
+    33,
+    33,
+    0,
+    NULL
   UNION ALL
-    -- Error: days_supply and qty both NULL
-    SELECT
+  -- NULL days_supply and qty, should result in NULL derived fields
+  SELECT
     'DrugD',
-    DATE'2024-01-01',
+    DATE('2024-01-01'),
     NULL,
     NULL,
-    'TREAT000',
-    DATE'1990-01-01',
-    DATE'2024-01-01',
+    'TREAT999',
+    NULL,
+    DATE('2024-01-01'),
     'DC - Standard',
     'PAT004',
     'commercial',
     'arrived',
     'yes',
-    TIMESTAMP'2024-01-10T00:00:00.000+0000'
+    NULL,
+    NULL,
+    NULL,
+    32,
+    NULL,
+    NULL,
+    NULL,
+    NULL,
+    NULL,
+    1,
+    'STANDARD'
   UNION ALL
-    -- Edge: days_supply non-numeric (invalid)
-    SELECT
+  -- NULL first_ship_date, age_at_first_ship should be NULL
+  SELECT
     'DrugE',
-    DATE'2024-01-01',
-    'abc',
-    30,
-    'TREAT001',
-    DATE'1985-05-05',
-    DATE'2024-01-01',
-    'DC - Standard',
+    DATE('2024-03-15'),
+    '30',
+    NULL,
+    'TREAT888',
+    DATE('1985-11-11'),
+    NULL,
+    'DC-PERMANENT',
     'PAT005',
     'commercial',
     'arrived',
-    'yes',
-    TIMESTAMP'2024-01-10T00:00:00.000+0000'
+    'no',
+    DATE('2024-04-14'),
+    DATE('2024-07-14'),
+    31,
+    18,
+    DATE('2024-04-14'),
+    NULL,
+    NULL,
+    NULL,
+    38,
+    NULL,
+    1,
+    'PERMANENT'
   UNION ALL
-    -- Edge: qty non-numeric (invalid, will be cast to NULL)
-    SELECT
+  -- NULL dob and first_ship_date, age and age_at_first_ship should be NULL
+  SELECT
     'DrugF',
-    DATE'2024-01-01',
+    DATE('2024-05-10'),
     NULL,
     NULL,
-    'TREAT002',
-    DATE'1985-05-05',
-    DATE'2024-01-01',
-    'DC - Standard',
+    'TREAT777',
+    NULL,
+    NULL,
+    'ongoing',
     'PAT006',
-    'commercial',
-    'arrived',
-    'yes',
-    TIMESTAMP'2024-01-10T00:00:00.000+0000'
-  UNION ALL
-    -- Edge: ship_type sample, should not count for latest_therapy_ships
-    SELECT
-    'DrugA',
-    DATE'2024-01-15',
-    '21',
-    63,
-    'TREAT123',
-    DATE'1980-06-15',
-    DATE'2023-12-01',
-    'DC - Standard',
-    'PAT001',
     'sample',
-    'arrived',
+    'pending',
     'yes',
-    TIMESTAMP'2024-01-20T00:00:00.000+0000'
+    NULL,
+    NULL,
+    NULL,
+    22,
+    NULL,
+    NULL,
+    NULL,
+    NULL,
+    NULL,
+    0,
+    NULL
   UNION ALL
-    -- Edge: multiple shipments for same treatment_id (prior_ship/days_between)
-    SELECT
-    'DrugA',
-    DATE'2024-01-22',
-    '21',
-    63,
-    'TREAT123',
-    DATE'1980-06-15',
-    DATE'2023-12-01',
-    'DC - Standard',
-    'PAT001',
-    'commercial',
-    'arrived',
-    'yes',
-    TIMESTAMP'2024-01-25T00:00:00.000+0000'
-  UNION ALL
-    -- Edge: multiple shipments for same treatment_id (prior_ship/days_between)
-    SELECT
-    'DrugA',
-    DATE'2024-02-12',
-    '21',
-    63,
-    'TREAT123',
-    DATE'1980-06-15',
-    DATE'2023-12-01',
-    'DC - Standard',
-    'PAT001',
-    'commercial',
-    'arrived',
-    'yes',
-    TIMESTAMP'2024-02-15T00:00:00.000+0000'
-  UNION ALL
-    -- Edge: refill_status = Other (should yield NULL discontinuation_type)
-    SELECT
+  -- Error: non-numeric days_supply, should set derived fields to NULL
+  SELECT
     'DrugG',
-    DATE'2024-03-01',
-    '30',
-    90,
-    'TREAT999',
-    DATE'1970-12-31',
-    DATE'2024-03-01',
-    'Other',
+    DATE('2024-01-01'),
+    'abc',
+    '84',
+    'TREAT555',
+    DATE('1980-05-10'),
+    DATE('2024-01-01'),
+    'DC - Standard',
     'PAT007',
     'commercial',
     'arrived',
-    'no',
-    TIMESTAMP'2024-03-10T00:00:00.000+0000'
-  UNION ALL
-    -- Edge: refill_status NULL
-    SELECT
-    'DrugH',
-    DATE'2024-03-01',
-    '30',
-    90,
-    'TREAT998',
-    DATE'1970-12-31',
-    DATE'2024-03-01',
+    'yes',
     NULL,
+    NULL,
+    NULL,
+    32,
+    NULL,
+    NULL,
+    NULL,
+    44,
+    44,
+    1,
+    'STANDARD'
+  UNION ALL
+  -- Error: non-numeric qty, should set derived fields to NULL
+  SELECT
+    'DrugH',
+    DATE('2024-03-15'),
+    '30',
+    'xyz',
+    'TREAT444',
+    DATE('1975-12-20'),
+    DATE('2024-03-15'),
+    'DC-PERMANENT',
     'PAT008',
     'commercial',
     'arrived',
     'no',
-    TIMESTAMP'2024-03-10T00:00:00.000+0000'
-  UNION ALL
-    -- Edge: ship_date NULL
-    SELECT
-    'DrugI',
     NULL,
-    '30',
-    90,
-    'TREAT997',
-    DATE'1970-12-31',
-    DATE'2024-03-01',
-    'DC - Standard',
+    NULL,
+    NULL,
+    18,
+    NULL,
+    NULL,
+    NULL,
+    48,
+    48,
+    1,
+    'PERMANENT'
+  UNION ALL
+  -- Edge: days_supply = 0, should handle as 0-day supply
+  SELECT
+    'DrugI',
+    DATE('2024-02-01'),
+    '0',
+    '0',
+    'TREAT321',
+    DATE('2000-01-01'),
+    DATE('2024-02-01'),
+    'ongoing',
     'PAT009',
     'commercial',
     'arrived',
-    'no',
-    TIMESTAMP'2024-03-10T00:00:00.000+0000'
-  UNION ALL
-    -- Edge: dob NULL
-    SELECT
-    'DrugJ',
-    DATE'2024-03-01',
-    '30',
-    90,
-    'TREAT996',
+    'yes',
+    DATE('2024-02-01'),
+    DATE('2024-05-02'),
+    1,
+    1,
+    DATE('2024-02-01'),
     NULL,
-    DATE'2024-03-01',
-    'DC - Standard',
+    NULL,
+    NULL,
+    24,
+    24,
+    1,
+    NULL
+  UNION ALL
+  -- Edge: days_supply = 1, minimal supply
+  SELECT
+    'DrugJ',
+    DATE('2024-02-02'),
+    '1',
+    '3',
+    'TREAT654',
+    DATE('2010-12-31'),
+    DATE('2024-02-02'),
+    'ongoing',
     'PAT010',
     'commercial',
     'arrived',
     'no',
-    TIMESTAMP'2024-03-10T00:00:00.000+0000'
-  UNION ALL
-    -- Edge: first_ship_date NULL
-    SELECT
-    'DrugK',
-    DATE'2024-03-01',
-    '30',
-    90,
-    'TREAT995',
-    DATE'1970-12-31',
+    DATE('2024-02-03'),
+    DATE('2024-05-05'),
+    2,
+    1,
+    DATE('2024-02-03'),
     NULL,
-    'DC - Standard',
+    NULL,
+    NULL,
+    13,
+    13,
+    1,
+    NULL
+  UNION ALL
+  -- Edge: days_supply = 365, 1 year supply
+  SELECT
+    'DrugK',
+    DATE('2023-01-01'),
+    '365',
+    '1095',
+    'TREAT987',
+    DATE('1960-06-15'),
+    DATE('2023-01-01'),
+    'ongoing',
     'PAT011',
     'commercial',
     'arrived',
-    'no',
-    TIMESTAMP'2024-03-10T00:00:00.000+0000'
+    'yes',
+    DATE('2023-12-31'),
+    DATE('2024-04-01'),
+    365,
+    397,
+    DATE('2023-12-31'),
+    NULL,
+    NULL,
+    NULL,
+    64,
+    64,
+    1,
+    NULL
   UNION ALL
-    -- Edge: calctime NULL
-    SELECT
+  -- Edge: qty = 0, days_supply present
+  SELECT
     'DrugL',
-    DATE'2024-03-01',
+    DATE('2024-03-01'),
     '30',
-    90,
-    'TREAT994',
-    DATE'1970-12-31',
-    DATE'2024-03-01',
-    'DC - Standard',
+    '0',
+    'TREAT654',
+    DATE('1995-03-01'),
+    DATE('2024-03-01'),
+    'ongoing',
     'PAT012',
     'commercial',
     'arrived',
     'no',
+    DATE('2024-03-31'),
+    DATE('2024-06-30'),
+    31,
+    1,
+    DATE('2024-03-31'),
+    NULL,
+    NULL,
+    NULL,
+    29,
+    29,
+    1,
     NULL
   UNION ALL
-    -- Special: special characters in product, patient_id, etc.
-    SELECT
-    'DrügΩ',
-    DATE'2024-04-01',
-    '28',
-    84,
-    'TREATΩ',
-    DATE'1995-07-07',
-    DATE'2024-04-01',
-    'DC - Standard',
-    'PATΩΩ',
-    'commercial',
-    'arrived',
-    'yes',
-    TIMESTAMP'2024-04-10T00:00:00.000+0000'
-  UNION ALL
-    -- Special: multi-byte unicode in product
-    SELECT
-    '药品A',
-    DATE'2024-05-01',
-    '30',
-    90,
-    'TREAT汉字',
-    DATE'1990-01-01',
-    DATE'2024-05-01',
-    'DC-PERMANENT',
-    'PAT汉字',
-    'commercial',
-    'arrived',
-    'yes',
-    TIMESTAMP'2024-05-10T00:00:00.000+0000'
-  UNION ALL
-    -- Edge: delivery_ontime NULL
-    SELECT
+  -- Edge: qty present, days_supply NULL, qty not divisible by 3
+  SELECT
     'DrugM',
-    DATE'2024-06-01',
-    '30',
-    90,
-    'TREAT993',
-    DATE'1970-12-31',
-    DATE'2024-06-01',
-    'DC - Standard',
+    DATE('2024-04-01'),
+    NULL,
+    '50',
+    'TREAT321',
+    DATE('1988-08-08'),
+    DATE('2024-04-01'),
+    'ongoing',
     'PAT013',
     'commercial',
     'arrived',
+    'yes',
+    DATE('2024-04-11'),
+    DATE('2024-07-11'),
+    11,
+    1,
+    DATE('2024-04-11'),
     NULL,
-    TIMESTAMP'2024-06-10T00:00:00.000+0000'
+    NULL,
+    NULL,
+    35,
+    35,
+    1,
+    NULL
   UNION ALL
-    -- Edge: shipment_arrived_status NULL
-    SELECT
-    'DrugN',
-    DATE'2024-07-01',
-    '30',
-    90,
-    'TREAT992',
-    DATE'1970-12-31',
-    DATE'2024-07-01',
-    'DC - Standard',
+  -- Special: special characters in product and patient_id
+  SELECT
+    'DrügN-测试',
+    DATE('2024-05-05'),
+    '14',
+    '42',
+    'TREAT特殊',
+    DATE('1999-12-31'),
+    DATE('2024-05-05'),
+    'ongoing',
+    'PAT特殊-测试',
+    'commercial',
+    'arrived',
+    'yes',
+    DATE('2024-05-19'),
+    DATE('2024-08-18'),
+    15,
+    27,
+    DATE('2024-05-19'),
+    NULL,
+    NULL,
+    NULL,
+    24,
+    24,
+    1,
+    NULL
+  UNION ALL
+  -- Special: multi-byte and emoji in product
+  SELECT
+    '💊DrugO',
+    DATE('2024-06-06'),
+    '21',
+    '63',
+    'TREATEMOJI',
+    DATE('2002-02-02'),
+    DATE('2024-06-06'),
+    'ongoing',
     'PAT014',
     'commercial',
-    NULL,
-    'yes',
-    TIMESTAMP'2024-07-10T00:00:00.000+0000'
-  UNION ALL
-    -- Edge: ship_type NULL
-    SELECT
-    'DrugO',
-    DATE'2024-08-01',
-    '30',
-    90,
-    'TREAT991',
-    DATE'1970-12-31',
-    DATE'2024-08-01',
-    'DC - Standard',
-    'PAT015',
-    NULL,
     'arrived',
-    'yes',
-    TIMESTAMP'2024-08-10T00:00:00.000+0000'
+    'no',
+    DATE('2024-06-27'),
+    DATE('2024-09-26'),
+    22,
+    26,
+    DATE('2024-06-27'),
+    NULL,
+    NULL,
+    NULL,
+    22,
+    22,
+    1,
+    NULL
   UNION ALL
-    -- Edge: refill_status with lower case (should not match discontinuation_type)
-    SELECT
+  -- Edge: refill_status NULL, discontinuation_type should be NULL
+  SELECT
     'DrugP',
-    DATE'2024-09-01',
+    DATE('2024-07-07'),
     '30',
-    90,
-    'TREAT990',
-    DATE'1970-12-31',
-    DATE'2024-09-01',
-    'dc - standard',
-    'PAT016',
+    '90',
+    'TREATNULL',
+    DATE('1985-05-05'),
+    DATE('2024-07-07'),
+    NULL,
+    'PAT015',
     'commercial',
     'arrived',
     'yes',
-    TIMESTAMP'2024-09-10T00:00:00.000+0000'
+    DATE('2024-08-06'),
+    DATE('2024-11-05'),
+    31,
+    1,
+    DATE('2024-08-06'),
+    NULL,
+    NULL,
+    NULL,
+    39,
+    39,
+    1,
+    NULL
   UNION ALL
-    -- Edge: days_supply = 0
-    SELECT
+  -- Edge: shipment_arrived_status NULL
+  SELECT
     'DrugQ',
-    DATE'2024-10-01',
-    '0',
-    0,
-    'TREAT989',
-    DATE'1970-12-31',
-    DATE'2024-10-01',
-    'DC - Standard',
+    DATE('2024-08-08'),
+    '30',
+    '90',
+    'TREATNULL2',
+    DATE('1992-09-09'),
+    DATE('2024-08-08'),
+    'ongoing',
+    'PAT016',
+    'commercial',
+    NULL,
+    'no',
+    DATE('2024-09-07'),
+    DATE('2024-12-07'),
+    31,
+    1,
+    DATE('2024-09-07'),
+    NULL,
+    NULL,
+    NULL,
+    31,
+    31,
+    1,
+    NULL
+  UNION ALL
+  -- Edge: delivery_ontime NULL
+  SELECT
+    'DrugR',
+    DATE('2024-09-09'),
+    '30',
+    '90',
+    'TREATNULL3',
+    DATE('1970-10-10'),
+    DATE('2024-09-09'),
+    'ongoing',
     'PAT017',
     'commercial',
     'arrived',
-    'yes',
-    TIMESTAMP'2024-10-10T00:00:00.000+0000'
-  UNION ALL
-    -- Edge: qty = 0, days_supply NULL
-    SELECT
-    'DrugR',
-    DATE'2024-11-01',
     NULL,
-    0,
-    'TREAT988',
-    DATE'1970-12-31',
-    DATE'2024-11-01',
-    'DC - Standard',
+    DATE('2024-10-09'),
+    DATE('2025-01-08'),
+    31,
+    1,
+    DATE('2024-10-09'),
+    NULL,
+    NULL,
+    NULL,
+    53,
+    53,
+    1,
+    NULL
+  UNION ALL
+  -- Edge: ship_type not commercial, latest_therapy_ships = 0
+  SELECT
+    'DrugS',
+    DATE('2024-10-10'),
+    '30',
+    '90',
+    'TREATNONCOMM',
+    DATE('1988-11-11'),
+    DATE('2024-10-10'),
+    'ongoing',
     'PAT018',
-    'commercial',
+    'sample',
     'arrived',
     'yes',
-    TIMESTAMP'2024-11-10T00:00:00.000+0000'
+    DATE('2024-11-09'),
+    DATE('2025-02-08'),
+    31,
+    1,
+    DATE('2024-11-09'),
+    NULL,
+    NULL,
+    NULL,
+    35,
+    35,
+    0,
+    NULL
   UNION ALL
-    -- Edge: days_supply negative
-    SELECT
-    'DrugS',
-    DATE'2024-12-01',
-    '-7',
-    21,
-    'TREAT987',
-    DATE'1970-12-31',
-    DATE'2024-12-01',
-    'DC - Standard',
+  -- Edge: refill_status = 'ongoing', discontinuation_type = NULL
+  SELECT
+    'DrugT',
+    DATE('2024-11-11'),
+    '30',
+    '90',
+    'TREATONGO',
+    DATE('1995-12-12'),
+    DATE('2024-11-11'),
+    'ongoing',
     'PAT019',
     'commercial',
     'arrived',
-    'yes',
-    TIMESTAMP'2024-12-10T00:00:00.000+0000'
-  UNION ALL
-    -- Edge: qty negative, days_supply NULL
-    SELECT
-    'DrugT',
-    DATE'2025-01-01',
+    'no',
+    DATE('2024-12-11'),
+    DATE('2025-03-13'),
+    31,
+    1,
+    DATE('2024-12-11'),
     NULL,
-    -21,
-    'TREAT986',
-    DATE'1970-12-31',
-    DATE'2025-01-01',
-    'DC - Standard',
+    NULL,
+    NULL,
+    28,
+    28,
+    1,
+    NULL
+  UNION ALL
+  -- Edge: prior_ship present, days_between calculated
+  SELECT
+    'DrugU',
+    DATE('2024-12-12'),
+    '30',
+    '90',
+    'TREATPRIOR',
+    DATE('1980-01-01'),
+    DATE('2024-12-12'),
+    'ongoing',
     'PAT020',
     'commercial',
     'arrived',
     'yes',
-    TIMESTAMP'2025-01-10T00:00:00.000+0000'
+    DATE('2025-01-11'),
+    DATE('2025-04-12'),
+    31,
+    1,
+    DATE('2025-01-11'),
+    DATE('2024-11-12'),
+    30,
+    NULL,
+    44,
+    44,
+    2,
+    NULL
   UNION ALL
-    -- Edge: all fields NULL
-    SELECT
+  -- Edge: days_since_supply_out present (supply out before calctime)
+  SELECT
+    'DrugV',
+    DATE('2024-01-01'),
+    '28',
+    '84',
+    'TREATGAP',
+    DATE('1980-05-10'),
+    DATE('2024-01-01'),
+    'DC - Standard',
+    'PAT021',
+    'commercial',
+    'arrived',
+    'yes',
+    DATE('2024-01-29'),
+    DATE('2024-04-29'),
+    28,
+    32,
+    DATE('2024-01-29'),
+    NULL,
+    NULL,
+    3,
+    44,
+    44,
+    1,
+    'STANDARD'
+  UNION ALL
+  -- Edge: days_since_supply_out NULL (supply not out yet)
+  SELECT
+    'DrugW',
+    DATE('2024-12-01'),
+    '28',
+    '84',
+    'TREATGAP2',
+    DATE('1980-05-10'),
+    DATE('2024-12-01'),
+    'DC - Standard',
+    'PAT022',
+    'commercial',
+    'arrived',
+    'yes',
+    DATE('2024-12-29'),
+    DATE('2025-03-30'),
+    28,
+    1,
+    DATE('2024-12-29'),
+    NULL,
+    NULL,
+    NULL,
+    44,
+    44,
+    1,
+    'STANDARD'
+  UNION ALL
+  -- Edge: all NULLs except product and patient_id
+  SELECT
+    'DrugX',
+    NULL,
+    NULL,
+    NULL,
+    NULL,
+    NULL,
+    NULL,
+    NULL,
+    'PAT023',
+    NULL,
     NULL,
     NULL,
     NULL,
@@ -418,101 +645,59 @@ WITH test_data AS (
     NULL,
     NULL
   UNION ALL
-    -- Edge: special characters in refill_status
-    SELECT
-    'DrugU',
-    DATE'2025-02-01',
-    '30',
-    90,
-    'TREAT985',
-    DATE'1970-12-31',
-    DATE'2025-02-01',
-    'DC - 特殊',
-    'PAT021',
-    'commercial',
-    'arrived',
-    'yes',
-    TIMESTAMP'2025-02-10T00:00:00.000+0000'
-  UNION ALL
-    -- Edge: special characters in delivery_ontime
-    SELECT
-    'DrugV',
-    DATE'2025-03-01',
-    '30',
-    90,
-    'TREAT984',
-    DATE'1970-12-31',
-    DATE'2025-03-01',
-    'DC - Standard',
-    'PAT022',
-    'commercial',
-    'arrived',
-    '是',
-    TIMESTAMP'2025-03-10T00:00:00.000+0000'
-  UNION ALL
-    -- Edge: special characters in shipment_arrived_status
-    SELECT
-    'DrugW',
-    DATE'2025-04-01',
-    '30',
-    90,
-    'TREAT983',
-    DATE'1970-12-31',
-    DATE'2025-04-01',
-    'DC - Standard',
-    'PAT023',
-    'commercial',
-    '到达',
-    'yes',
-    TIMESTAMP'2025-04-10T00:00:00.000+0000'
-  UNION ALL
-    -- Edge: ship_type = 'Commercial' (case sensitivity)
-    SELECT
-    'DrugX',
-    DATE'2025-05-01',
-    '30',
-    90,
-    'TREAT982',
-    DATE'1970-12-31',
-    DATE'2025-05-01',
-    'DC - Standard',
-    'PAT024',
-    'Commercial',
-    'arrived',
-    'yes',
-    TIMESTAMP'2025-05-10T00:00:00.000+0000'
-  UNION ALL
-    -- Edge: ship_type = 'COMMERCIAL' (case sensitivity)
-    SELECT
+  -- Special: whitespace and special char in delivery_ontime
+  SELECT
     'DrugY',
-    DATE'2025-06-01',
+    DATE('2024-06-15'),
     '30',
-    90,
-    'TREAT981',
-    DATE'1970-12-31',
-    DATE'2025-06-01',
-    'DC - Standard',
-    'PAT025',
-    'COMMERCIAL',
-    'arrived',
-    'yes',
-    TIMESTAMP'2025-06-10T00:00:00.000+0000'
-  UNION ALL
-    -- Edge: ship_type = 'commercial' (lowercase, should count for latest_therapy_ships)
-    SELECT
-    'DrugZ',
-    DATE'2025-07-01',
-    '30',
-    90,
-    'TREAT980',
-    DATE'1970-12-31',
-    DATE'2025-07-01',
-    'DC - Standard',
-    'PAT026',
+    '90',
+    'TREATSPACE',
+    DATE('1990-01-01'),
+    DATE('2024-06-15'),
+    'ongoing',
+    'PAT024',
     'commercial',
     'arrived',
-    'yes',
-    TIMESTAMP'2025-07-10T00:00:00.000+0000'
+    ' 𝄞 ',
+    DATE('2024-07-15'),
+    DATE('2024-10-14'),
+    31,
+    1,
+    DATE('2024-07-15'),
+    NULL,
+    NULL,
+    NULL,
+    34,
+    34,
+    1,
+    NULL
+  UNION ALL
+  -- Special: negative qty (invalid, but string type)
+  SELECT
+    'DrugZ',
+    DATE('2024-07-20'),
+    '30',
+    '-90',
+    'TREATNEG',
+    DATE('1985-07-20'),
+    DATE('2024-07-20'),
+    'ongoing',
+    'PAT025',
+    'commercial',
+    'arrived',
+    'no',
+    DATE('2024-08-19'),
+    DATE('2024-11-18'),
+    31,
+    1,
+    DATE('2024-08-19'),
+    NULL,
+    NULL,
+    NULL,
+    39,
+    39,
+    1,
+    NULL
 )
 
 SELECT * FROM test_data
