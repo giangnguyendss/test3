@@ -1,0 +1,261 @@
+Feature: SQL-based ETL mapping for purgo_playground.d_comp from source tables using d_comp_mapping.xlsx
+
+  The ETL process must populate the target table purgo_playground.d_comp using the mapping rules:
+  - Only columns where both "Mandatory for mapping" = YES and "Need Mapping" = YES are mapped from source.
+  - All other columns in d_comp are set to NULL.
+  - Joins and filters are applied as per mapping sheet and source table notes.
+  - Data quality and validation rules are enforced as per schema and mapping.
+
+  Background:
+    Given the source tables purgo_playground.psek, purgo_playground.pchk, and purgo_playground.para exist and are accessible
+    And the target table purgo_playground.d_comp exists and is empty before each run
+    And all joins on patnr must use TRIM(patnr) in both tables
+    And the following join logic is used:
+      | Join Type | Left Table | Left Column(s)         | Right Table | Right Column(s)        |
+      | LEFT      | PSEK       | TANPT, PKLNR           | PCHK        | TANPT, CKARG           |
+      | LEFT      | PCHK       | TANPT, TRIM(PATNR)     | PARA        | TANPT, TRIM(PATNR)     |
+    And the filter "tgort = 'FIN'" is applied to PSEK.tgort
+    And the mapping is a full refresh (all records from PSEK with LEFT JOINs)
+    And the following field mapping is applied:
+      | d_comp column   | Source/Rule                                 |
+      | src_sys_cd      | NULL                                        |
+      | co_cd           | PSEK.PKLNR                                  |
+      | co_nm           | PSEK.tgort                                  |
+      | st_cd           | NULL                                        |
+      | st_nm           | NULL                                        |
+      | rgn_cd          | NULL                                        |
+      | rgn_nm          | NULL                                        |
+      | cntry_cd        | PARA.PTART                                  |
+      | cntry_nm        | PSEK.dwart                                  |
+      | source_country  | 'NA' (hardcoded)                            |
+      | crt_dt          | current_timestamp()                         |
+    And d_comp.co_cd is NOT NULL per schema constraint
+
+  Scenario: Happy path - All required source data present and valid
+    Given PSEK contains a record with
+      | TANPT | PKLNR | TGORT | DWART | PATNR   |
+      | T001  | C100  | FIN   | Germany |  12345  |
+    And PCHK contains a record with
+      | TANPT | CKARG | PATNR   |
+      | T001  | C100  |  12345  |
+    And PARA contains a record with
+      | TANPT | PATNR   | PTART |
+      | T001  | 12345   | DE    |
+    When the ETL mapping is executed
+    Then purgo_playground.d_comp contains a record with
+      | src_sys_cd | co_cd | co_nm | st_cd | st_nm | rgn_cd | rgn_nm | cntry_cd | cntry_nm | source_country | crt_dt         |
+      | NULL       | C100  | FIN   | NULL  | NULL  | NULL   | NULL   | DE       | Germany  | NA             | <current_time> |
+    And all NOT NULL constraints are satisfied
+
+  Scenario: Error - PSEK.PKLNR is NULL (violates NOT NULL constraint)
+    Given PSEK contains a record with
+      | TANPT | PKLNR | TGORT | DWART | PATNR   |
+      | T002  | NULL  | FIN   | France |  54321  |
+    And PCHK contains a record with
+      | TANPT | CKARG | PATNR   |
+      | T002  | NULL  |  54321  |
+    And PARA contains a record with
+      | TANPT | PATNR   | PTART |
+      | T002  | 54321   | FR    |
+    When the ETL mapping is executed
+    Then the record is not inserted into purgo_playground.d_comp
+    And an error is logged with message "co_cd (PKLNR) is NULL for TANPT=T002, record skipped due to NOT NULL constraint"
+
+  Scenario: Error - PSEK.TGORT is not 'FIN' (filter applied)
+    Given PSEK contains a record with
+      | TANPT | PKLNR | TGORT | DWART | PATNR   |
+      | T003  | C200  | HR    | Hungary |  67890  |
+    When the ETL mapping is executed
+    Then no record is inserted into purgo_playground.d_comp for TANPT=T003
+    And an info log is written "PSEK.TGORT != 'FIN', record filtered out"
+
+  Scenario: Happy path - PARA join missing, cntry_cd is NULL
+    Given PSEK contains a record with
+      | TANPT | PKLNR | TGORT | DWART | PATNR   |
+      | T004  | C300  | FIN   | Italy |  11111  |
+    And PCHK contains a record with
+      | TANPT | CKARG | PATNR   |
+      | T004  | C300  |  11111  |
+    And PARA does not contain a matching record for TANPT=T004 and PATNR=11111
+    When the ETL mapping is executed
+    Then purgo_playground.d_comp contains a record with
+      | src_sys_cd | co_cd | co_nm | st_cd | st_nm | rgn_cd | rgn_nm | cntry_cd | cntry_nm | source_country | crt_dt         |
+      | NULL       | C300  | FIN   | NULL  | NULL  | NULL   | NULL   | NULL     | Italy    | NA             | <current_time> |
+
+  Scenario: Happy path - PCHK join missing, PARA join not attempted, cntry_cd is NULL
+    Given PSEK contains a record with
+      | TANPT | PKLNR | TGORT | DWART | PATNR   |
+      | T005  | C400  | FIN   | Spain |  22222  |
+    And PCHK does not contain a matching record for TANPT=T005 and CKARG=C400
+    When the ETL mapping is executed
+    Then purgo_playground.d_comp contains a record with
+      | src_sys_cd | co_cd | co_nm | st_cd | st_nm | rgn_cd | rgn_nm | cntry_cd | cntry_nm | source_country | crt_dt         |
+      | NULL       | C400  | FIN   | NULL  | NULL  | NULL   | NULL   | NULL     | Spain    | NA             | <current_time> |
+
+  Scenario Outline: Data-driven - Multiple records with various join and filter outcomes
+    Given PSEK contains a record with
+      | TANPT | PKLNR | TGORT | DWART | PATNR   |
+      | <tanpt> | <pklnr> | <tgort> | <dwart> | <patnr> |
+    And PCHK contains a record with
+      | TANPT | CKARG | PATNR   |
+      | <tanpt> | <ckarg> | <patnr> |
+    And PARA contains a record with
+      | TANPT | PATNR   | PTART |
+      | <tanpt> | <patnr> | <ptart> |
+    When the ETL mapping is executed
+    Then purgo_playground.d_comp contains a record with
+      | src_sys_cd | co_cd | co_nm | st_cd | st_nm | rgn_cd | rgn_nm | cntry_cd | cntry_nm | source_country | crt_dt         |
+      | NULL       | <expected_co_cd> | <expected_co_nm> | NULL | NULL | NULL | NULL | <expected_cntry_cd> | <expected_cntry_nm> | NA | <current_time> |
+
+    Examples:
+      | tanpt | pklnr | tgort | dwart   | patnr | ckarg | ptart | expected_co_cd | expected_co_nm | expected_cntry_cd | expected_cntry_nm |
+      | T010  | C500  | FIN   | Poland  | 33333 | C500  | PL    | C500           | FIN            | PL                | Poland           |
+      | T011  | C600  | FIN   | Sweden  | 44444 | C600  | NULL  | C600           | FIN            | NULL              | Sweden           |
+      | T012  | C700  | HR    | Norway  | 55555 | C700  | NO    | (not inserted) | (not inserted) | (not inserted)    | (not inserted)   |
+
+  Scenario: Data quality - PATNR with leading/trailing spaces in joins
+    Given PSEK contains a record with
+      | TANPT | PKLNR | TGORT | DWART | PATNR    |
+      | T020  | C800  | FIN   | Greece | ' 88888 ' |
+    And PCHK contains a record with
+      | TANPT | CKARG | PATNR   |
+      | T020  | C800  | '88888' |
+    And PARA contains a record with
+      | TANPT | PATNR   | PTART |
+      | T020  | '88888' | GR    |
+    When the ETL mapping is executed
+    Then purgo_playground.d_comp contains a record with
+      | src_sys_cd | co_cd | co_nm | st_cd | st_nm | rgn_cd | rgn_nm | cntry_cd | cntry_nm | source_country | crt_dt         |
+      | NULL       | C800  | FIN   | NULL  | NULL  | NULL   | NULL   | GR       | Greece   | NA             | <current_time> |
+
+  Scenario: Data quality - Duplicate records in PSEK
+    Given PSEK contains two records with
+      | TANPT | PKLNR | TGORT | DWART | PATNR   |
+      | T030  | C900  | FIN   | UK    | 99999   |
+      | T030  | C900  | FIN   | UK    | 99999   |
+    And PCHK contains a record with
+      | TANPT | CKARG | PATNR   |
+      | T030  | C900  | 99999   |
+    And PARA contains a record with
+      | TANPT | PATNR   | PTART |
+      | T030  | 99999   | GB    |
+    When the ETL mapping is executed
+    Then purgo_playground.d_comp contains two records with
+      | src_sys_cd | co_cd | co_nm | st_cd | st_nm | rgn_cd | rgn_nm | cntry_cd | cntry_nm | source_country | crt_dt         |
+      | NULL       | C900  | FIN   | NULL  | NULL  | NULL   | NULL   | GB       | UK       | NA             | <current_time> |
+      | NULL       | C900  | FIN   | NULL  | NULL  | NULL   | NULL   | GB       | UK       | NA             | <current_time> |
+
+  Scenario: Data quality - All non-mandatory columns are NULL
+    Given PSEK contains a record with
+      | TANPT | PKLNR | TGORT | DWART | PATNR   |
+      | T040  | C1000 | FIN   | Denmark |  12321  |
+    And PCHK contains a record with
+      | TANPT | CKARG | PATNR   |
+      | T040  | C1000 |  12321  |
+    And PARA contains a record with
+      | TANPT | PATNR   | PTART |
+      | T040  | 12321   | DK    |
+    When the ETL mapping is executed
+    Then purgo_playground.d_comp contains a record where
+      | st_cd | st_nm | rgn_cd | rgn_nm |
+      | NULL  | NULL  | NULL   | NULL   |
+
+  Scenario: Error - Source tables missing
+    Given purgo_playground.psek does not exist
+    When the ETL mapping is executed
+    Then the process fails with error message "Source table purgo_playground.psek not found"
+
+  Scenario: Error - Target table missing
+    Given purgo_playground.d_comp does not exist
+    When the ETL mapping is executed
+    Then the process fails with error message "Target table purgo_playground.d_comp not found"
+
+  Scenario: Error - Invalid data type in source (e.g., PKLNR is not string)
+    Given PSEK contains a record with
+      | TANPT | PKLNR | TGORT | DWART | PATNR   |
+      | T050  | 12345 | FIN   | USA   |  54321  |
+    And PKLNR is an integer in the source
+    When the ETL mapping is executed
+    Then the process fails with error message "Type mismatch: PKLNR must be string"
+
+  Scenario: Error - Multiple PCHK or PARA matches for a single PSEK record
+    Given PSEK contains a record with
+      | TANPT | PKLNR | TGORT | DWART | PATNR   |
+      | T060  | C1100 | FIN   | Portugal |  77777  |
+    And PCHK contains two records with
+      | TANPT | CKARG | PATNR   |
+      | T060  | C1100 |  77777  |
+      | T060  | C1100 |  77777  |
+    And PARA contains two records with
+      | TANPT | PATNR   | PTART |
+      | T060  | 77777   | PT    |
+      | T060  | 77777   | PT    |
+    When the ETL mapping is executed
+    Then purgo_playground.d_comp contains two records with
+      | src_sys_cd | co_cd | co_nm | st_cd | st_nm | rgn_cd | rgn_nm | cntry_cd | cntry_nm | source_country | crt_dt         |
+      | NULL       | C1100 | FIN   | NULL  | NULL  | NULL   | NULL   | PT       | Portugal | NA             | <current_time> |
+      | NULL       | C1100 | FIN   | NULL  | NULL  | NULL   | NULL   | PT       | Portugal | NA             | <current_time> |
+
+  Scenario: Error - No records in PSEK after filter
+    Given PSEK contains only records with TGORT != 'FIN'
+    When the ETL mapping is executed
+    Then purgo_playground.d_comp is empty
+
+  Scenario: Error - Attempt to map columns not marked as both "Mandatory for mapping" and "Need Mapping" = YES
+    Given the mapping logic attempts to map st_cd from any source
+    When the ETL mapping is executed
+    Then the process fails with error message "Column st_cd is not eligible for mapping per mapping sheet; must be set to NULL"
+
+  Scenario: Error - Attempt to hardcode src_sys_cd to 'FBW'
+    Given the mapping logic attempts to set src_sys_cd to 'FBW'
+    When the ETL mapping is executed
+    Then the process fails with error message "Column src_sys_cd is not eligible for mapping per mapping sheet; must be set to NULL"
+
+  Scenario: Data quality - source_country is always 'NA'
+    Given PSEK contains a record with
+      | TANPT | PKLNR | TGORT | DWART | PATNR   |
+      | T070  | C1200 | FIN   | Belgium |  88888  |
+    And PCHK contains a record with
+      | TANPT | CKARG | PATNR   |
+      | T070  | C1200 |  88888  |
+    And PARA contains a record with
+      | TANPT | PATNR   | PTART |
+      | T070  | 88888   | BE    |
+    When the ETL mapping is executed
+    Then purgo_playground.d_comp contains a record with
+      | source_country |
+      | NA             |
+
+  Scenario: Data quality - crt_dt is set to current timestamp
+    Given PSEK contains a record with
+      | TANPT | PKLNR | TGORT | DWART | PATNR   |
+      | T080  | C1300 | FIN   | Austria |  99999  |
+    And PCHK contains a record with
+      | TANPT | CKARG | PATNR   |
+      | T080  | C1300 |  99999  |
+    And PARA contains a record with
+      | TANPT | PATNR   | PTART |
+      | T080  | 99999   | AT    |
+    When the ETL mapping is executed
+    Then purgo_playground.d_comp contains a record where crt_dt is within 5 seconds of the ETL execution time
+
+  Scenario: Error - Attempt to map a column not present in d_comp
+    Given the mapping logic attempts to map a column "foo_bar" not present in d_comp
+    When the ETL mapping is executed
+    Then the process fails with error message "Column foo_bar does not exist in target table d_comp"
+
+  Scenario: Error - Attempt to map from a source column not present in source table
+    Given the mapping logic attempts to map d_comp.co_nm from PSEK.foo_bar
+    When the ETL mapping is executed
+    Then the process fails with error message "Source column foo_bar does not exist in table PSEK"
+
+  Scenario: Error - Attempt to join on a column not present in join tables
+    Given the mapping logic attempts to join PSEK and PCHK on column "foo_bar"
+    When the ETL mapping is executed
+    Then the process fails with error message "Join column foo_bar does not exist in one or both join tables"
+
+  Scenario: Error - Attempt to join without trimming PATNR
+    Given the mapping logic joins on PATNR without trimming spaces
+    When the ETL mapping is executed
+    Then the process fails with error message "Join on PATNR must use TRIM() on both sides as per mapping rules"
+
