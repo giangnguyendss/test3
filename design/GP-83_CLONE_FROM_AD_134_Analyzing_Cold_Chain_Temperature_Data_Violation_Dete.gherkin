@@ -1,0 +1,96 @@
+Feature: Cold Chain Temperature Monitoring and Violation Aggregation
+
+  This feature ensures that temperature data in the cold chain is monitored for compliance.
+  It identifies violations when temperature readings fall outside the allowed range (minimum 0.0°C, maximum -8.0°C),
+  flags violations, and aggregates data by location to provide average temperature and count of violations.
+
+  Background:
+    Given the Unity Catalog is "purgo_databricks"
+    And the schema is "purgo_playground"
+    And the table is "cold_chain_temperature"
+    And the temperature column is named "temperature"
+    And the location column is named "location"
+    And the output should include:
+      | violation_flag (yes/no) |
+      | location                |
+      | average_temperature     |
+      | violation_count         |
+    And the temperature must be a numeric value in degrees Celsius
+    And the valid temperature range is between -8.0 and 0.0 inclusive
+
+  Scenario: Identify temperature violation when temperature is below -8.0 or above 0.0
+    Given a record with temperature value <temp_value>
+    When the temperature is evaluated
+    Then if temperature < -8.0 or temperature > 0.0, set violation_flag to "yes"
+    And if temperature >= -8.0 and temperature <= 0.0, set violation_flag to "no"
+
+  Scenario Outline: Validate temperature violation detection for various temperature values
+    Given a record with temperature value <temperature>
+    When the temperature is checked against the allowed range
+    Then the violation_flag should be <expected_flag>
+
+    Examples:
+      | temperature | expected_flag |
+      | -9.5        | yes           |
+      | -8.1        | yes           |
+      | -8.0        | no            |
+      | -5.0        | no            |
+      | 0.0         | no            |
+      | 0.1         | yes           |
+      | 5.0         | yes           |
+
+  Scenario: Aggregate data by location for average temperature and count of violations
+    Given a set of records with columns "location", "temperature", and "violation_flag"
+    When the data is grouped by "location"
+    Then calculate the average of "temperature" as "average_temperature" per location
+    And count the number of records where "violation_flag" is "yes" as "violation_count" per location
+
+  Scenario Outline: Validate aggregation logic for multiple locations
+    Given the following records:
+      | location   | temperature | violation_flag |
+      | <loc1>     | <temp1>     | <flag1>        |
+      | <loc1>     | <temp2>     | <flag2>        |
+      | <loc2>     | <temp3>     | <flag3>        |
+      | <loc2>     | <temp4>     | <flag4>        |
+    When the data is aggregated by location
+    Then for location <loc1>, average_temperature should be <avg1> and violation_count should be <count1>
+    And for location <loc2>, average_temperature should be <avg2> and violation_count should be <count2>
+
+    Examples:
+      | loc1   | temp1 | flag1 | temp2 | flag2 | avg1  | count1 | loc2   | temp3 | flag3 | temp4 | flag4 | avg2  | count2 |
+      | SiteA  | -7.0  | no    | 0.5   | yes   | -3.25 | 1      | SiteB  | -9.0  | yes   | -8.0  | no    | -8.5  | 1      |
+      | Depot1 | 1.0   | yes   | -8.5  | yes   | -3.75 | 2      | Depot2 | -5.0  | no    | -6.0  | no    | -5.5  | 0      |
+
+  Scenario: Handle missing or invalid temperature values
+    Given a record with a missing or non-numeric temperature value
+    When the temperature is evaluated
+    Then the violation_flag should be set to "error"
+    And an error message "Invalid temperature value" should be logged
+
+  Scenario Outline: Validate error handling for invalid temperature data
+    Given a record with temperature value <temperature>
+    When the temperature is checked
+    Then the violation_flag should be <expected_flag>
+    And the error message should be <error_message>
+
+    Examples:
+      | temperature | expected_flag | error_message              |
+      | null        | error         | Invalid temperature value  |
+      | "abc"       | error         | Invalid temperature value  |
+
+  Scenario: Output the final results
+    Given the processed data with violation flags and aggregation results
+    When the output is generated
+    Then show the table with all original columns plus "violation_flag"
+    And show the aggregation table with columns: "location", "average_temperature", "violation_count"
+
+  Scenario: PySpark code generation for violation detection and aggregation
+    Given the table "purgo_playground.cold_chain_temperature" with columns "location" and "temperature"
+    When the PySpark code is generated
+    Then the code should:
+      | - Read the table from Unity Catalog |
+      | - Add a "violation_flag" column: "yes" if temperature < -8.0 or temperature > 0.0, "no" otherwise |
+      | - Handle missing or invalid temperature values by setting "violation_flag" to "error" and logging an error message |
+      | - Aggregate by "location" to compute average temperature and count of violations (where violation_flag = "yes") |
+      | - Output two DataFrames: one with violation flags, one with aggregation results |
+      | - Contain no syntax errors |
