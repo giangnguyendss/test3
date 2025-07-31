@@ -1,0 +1,135 @@
+Feature: Compound Drug Screening Analysis and Result Categorization
+
+  This feature performs comprehensive analysis on compound screening data, including filtering, aggregation, joining, scoring, and categorization of results based on overall potential.
+
+  Background:
+    Given the source table "purgo_playground.compound_drug_analysis" exists in Unity Catalog "purgo_databricks"
+    And the table contains columns: study_id, compound_id, mutation_id, therapeutic_area, drug_name, ic50, auc, efficacy, toxicity, potency, sample_size, mutation_frequency, mutation_severity, compound_concentration, cell_viability, growth_inhibition, result, approved_flag, validation_status, status, created_by, score1, score2, score3, score4, score5
+
+  # Happy Path: Data Filtering, Aggregation, Join, Scoring, Categorization, and Output
+
+  Scenario: Filter, aggregate, join, compute overall_score, categorize, and display results
+    Given the table "purgo_playground.compound_drug_analysis" contains valid data
+    When the data is filtered to include only rows where approved_flag = 1 and validation_status = "valid"
+    And the filtered data is grouped by therapeutic_area to calculate:
+      | Aggregation         | Column         | Calculation Method                |
+      |---------------------|---------------|-----------------------------------|
+      | avg_ic50            | ic50          | average, ignoring nulls           |
+      | avg_auc             | auc           | average, ignoring nulls           |
+      | avg_efficacy        | efficacy      | average, ignoring nulls           |
+      | total_sample_size   | sample_size   | sum, treating null as 0           |
+      | study_count         | study_id      | count of distinct study_id        |
+    And the filtered data is joined with the aggregated data on therapeutic_area using an inner join
+    And for each joined row, overall_score is computed as the average of score1, score2, score3, score4, score5, ignoring nulls in the scores
+    And each row is categorized as:
+      | overall_score range | potential_category   |
+      |--------------------|---------------------|
+      | 70 <= score <= 100 | High Potential      |
+      | 60 <= score < 70   | Moderate Potential  |
+      | score < 60         | Low Potential       |
+    Then the final output displays all columns from "purgo_playground.compound_drug_analysis" plus avg_ic50, avg_auc, avg_efficacy, total_sample_size, study_count, overall_score, and potential_category
+
+  # Error Scenarios
+
+  Scenario Outline: Error when required columns are missing in the source table
+    Given the table "purgo_playground.compound_drug_analysis" is missing column "<missing_column>"
+    When the analysis is executed
+    Then an error is raised with message "Required column <missing_column> not found in source table"
+
+    Examples:
+      | missing_column |
+      | ic50           |
+      | auc            |
+      | efficacy       |
+      | sample_size    |
+      | study_id       |
+      | score1         |
+      | score2         |
+      | score3         |
+      | score4         |
+      | score5         |
+      | approved_flag  |
+      | validation_status |
+      | therapeutic_area |
+
+  Scenario: Error when no rows match the filter criteria
+    Given the table "purgo_playground.compound_drug_analysis" contains no rows where approved_flag = 1 and validation_status = "valid"
+    When the analysis is executed
+    Then the final output is an empty result set
+
+  Scenario Outline: Error when join key therapeutic_area is null in either dataset
+    Given the filtered data contains a row with therapeutic_area = <null_value>
+    Or the aggregated data contains a row with therapeutic_area = <null_value>
+    When the join is performed on therapeutic_area
+    Then the row with null therapeutic_area is excluded from the joined result
+
+    Examples:
+      | null_value |
+      | null       |
+      | ""         |
+
+  Scenario: Error when all score columns are null for a row
+    Given a row in the filtered data has score1, score2, score3, score4, score5 all null
+    When overall_score is computed
+    Then overall_score is set to null
+    And potential_category is set to "Low Potential"
+
+  # Data-driven Scenarios for Categorization
+
+  Scenario Outline: Categorize results based on overall_score
+    Given a row with overall_score = <overall_score>
+    When the potential_category is determined
+    Then the potential_category is "<expected_category>"
+
+    Examples:
+      | overall_score | expected_category   |
+      | 85            | High Potential      |
+      | 70            | High Potential      |
+      | 69.99         | Moderate Potential  |
+      | 65            | Moderate Potential  |
+      | 60            | Moderate Potential  |
+      | 59.99         | Low Potential       |
+      | 40            | Low Potential       |
+      | null          | Low Potential       |
+
+  # Validation Rules
+
+  Scenario: Validation of numeric columns for aggregation
+    Given ic50, auc, efficacy, sample_size are numeric columns
+    When aggregating, null values in ic50, auc, efficacy are ignored for averages
+    And null values in sample_size are treated as 0 for summation
+    And study_count is the count of distinct study_id per therapeutic_area, ignoring null study_id
+
+  Scenario: Validation of score columns for overall_score
+    Given score1, score2, score3, score4, score5 are numeric columns
+    When computing overall_score, only non-null scores are included in the average
+    If all scores are null, overall_score is set to null
+
+  # Output Specification
+
+  Scenario: Output includes all required columns
+    Given the final output is generated
+    Then it includes all columns from "purgo_playground.compound_drug_analysis"
+    And the following computed columns: avg_ic50, avg_auc, avg_efficacy, total_sample_size, study_count, overall_score, potential_category
+
+  # Null and Missing Value Handling
+
+  Scenario: Handling of null or missing values in key metrics
+    Given a row has null values in ic50, auc, efficacy, or sample_size
+    When performing aggregation
+    Then nulls in ic50, auc, efficacy are ignored for averages
+    And nulls in sample_size are treated as 0 for summation
+
+  Scenario: Handling of null or missing values in score columns
+    Given a row has some or all score1-5 as null
+    When computing overall_score
+    Then only non-null scores are averaged
+    If all are null, overall_score is null and potential_category is "Low Potential"
+
+  # Output Destination
+
+  Scenario: Output is displayed or returned as a DataFrame
+    Given the analysis completes successfully
+    Then the final result is displayed or returned as a DataFrame
+    And is not written to a new table unless explicitly specified
+
