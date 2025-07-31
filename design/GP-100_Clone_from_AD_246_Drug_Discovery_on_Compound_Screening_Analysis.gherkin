@@ -1,135 +1,138 @@
 Feature: Compound Drug Screening Analysis and Result Categorization
 
-  This feature performs comprehensive analysis on compound screening data, including filtering, aggregation, joining, scoring, and categorization of results based on overall potential.
+  This feature performs calculations, aggregations, joins, and filtering on the compound screening analysis data from the Unity Catalog table purgo_playground.compound_drug_analysis. The analysis evaluates compound results based on IC50, AUC, Efficacy, and other factors, generating insights by categorizing results into High, Moderate, or Low Potential.
 
   Background:
-    Given the source table "purgo_playground.compound_drug_analysis" exists in Unity Catalog "purgo_databricks"
-    And the table contains columns: study_id, compound_id, mutation_id, therapeutic_area, drug_name, ic50, auc, efficacy, toxicity, potency, sample_size, mutation_frequency, mutation_severity, compound_concentration, cell_viability, growth_inhibition, result, approved_flag, validation_status, status, created_by, score1, score2, score3, score4, score5
-
-  # Happy Path: Data Filtering, Aggregation, Join, Scoring, Categorization, and Output
-
-  Scenario: Filter, aggregate, join, compute overall_score, categorize, and display results
-    Given the table "purgo_playground.compound_drug_analysis" contains valid data
-    When the data is filtered to include only rows where approved_flag = 1 and validation_status = "valid"
-    And the filtered data is grouped by therapeutic_area to calculate:
+    Given the source table is "purgo_playground.compound_drug_analysis" in Unity Catalog "purgo_databricks"
+    And the table contains columns: study_id (string), compound_id (string), mutation_id (string), therapeutic_area (string), drug_name (string), ic50 (double), auc (double), efficacy (double), toxicity (double), potency (double), sample_size (bigint), mutation_frequency (bigint), mutation_severity (bigint), compound_concentration (double), cell_viability (double), growth_inhibition (double), result (string), approved_flag (bigint), validation_status (string), status (string), created_by (string), score1 (double), score2 (double), score3 (double), score4 (double), score5 (double)
+    And the analysis groups data by therapeutic_area to calculate:
       | Aggregation         | Column         | Calculation Method                |
-      |---------------------|---------------|-----------------------------------|
-      | avg_ic50            | ic50          | average, ignoring nulls           |
-      | avg_auc             | auc           | average, ignoring nulls           |
-      | avg_efficacy        | efficacy      | average, ignoring nulls           |
-      | total_sample_size   | sample_size   | sum, treating null as 0           |
-      | study_count         | study_id      | count of distinct study_id        |
+      |--------------------|---------------|-----------------------------------|
+      | avg_ic50           | ic50          | average of ic50                   |
+      | avg_auc            | auc           | average of auc                    |
+      | avg_efficacy       | efficacy      | average of efficacy               |
+      | total_sample_size  | sample_size   | sum of sample_size                |
+      | study_count        | study_id      | count of distinct study_id        |
+    And only rows where approved_flag = 1 and validation_status = "valid" are included in the filtered dataset
     And the filtered data is joined with the aggregated data on therapeutic_area using an inner join
-    And for each joined row, overall_score is computed as the average of score1, score2, score3, score4, score5, ignoring nulls in the scores
-    And each row is categorized as:
+    And overall_score is computed as the average of score1, score2, score3, score4, score5, ignoring nulls
+    And potential_category is assigned as:
       | overall_score range | potential_category   |
       |--------------------|---------------------|
       | 70 <= score <= 100 | High Potential      |
       | 60 <= score < 70   | Moderate Potential  |
       | score < 60         | Low Potential       |
-    Then the final output displays all columns from "purgo_playground.compound_drug_analysis" plus avg_ic50, avg_auc, avg_efficacy, total_sample_size, study_count, overall_score, and potential_category
+    And the final output displays all source columns, the aggregation columns, overall_score, and potential_category
 
-  # Error Scenarios
+  Scenario: Successful aggregation, filtering, joining, and categorization (happy path)
+    Given the table contains the following rows:
+      | study_id | compound_id | therapeutic_area | ic50  | auc   | efficacy | sample_size | approved_flag | validation_status | score1 | score2 | score3 | score4 | score5 |
+      | S1       | C1         | Oncology         | 10.0  | 0.85  | 80.0     | 100         | 1             | valid            | 80.0   | 75.0   | 90.0   | 85.0   | 80.0   |
+      | S2       | C2         | Oncology         | 12.0  | 0.80  | 78.0     | 120         | 1             | valid            | 70.0   | 65.0   | 60.0   | 75.0   | 80.0   |
+      | S3       | C3         | Cardiology       | 8.0   | 0.90  | 85.0     | 90          | 1             | valid            | 60.0   | 62.0   | 65.0   | 58.0   | 61.0   |
+      | S4       | C4         | Oncology         | 11.0  | 0.82  | 79.0     | 110         | 0             | valid            | 80.0   | 85.0   | 90.0   | 95.0   | 100.0  |
+      | S5       | C5         | Cardiology       | 9.0   | 0.88  | 83.0     | 95          | 1             | invalid          | 70.0   | 75.0   | 80.0   | 85.0   | 90.0   |
+    When the data is filtered to include only rows where approved_flag = 1 and validation_status = "valid"
+    Then the filtered dataset contains:
+      | study_id | therapeutic_area |
+      | S1       | Oncology         |
+      | S2       | Oncology         |
+      | S3       | Cardiology       |
+    When the data is grouped by therapeutic_area and aggregated
+    Then the aggregated results are:
+      | therapeutic_area | avg_ic50 | avg_auc | avg_efficacy | total_sample_size | study_count |
+      | Oncology         | 11.0     | 0.825   | 79.0         | 220               | 2           |
+      | Cardiology       | 8.0      | 0.90    | 85.0         | 90                | 1           |
+    When the filtered data is joined with the aggregated data on therapeutic_area
+    Then each row contains the original columns plus the aggregation columns
+    When overall_score is calculated as the average of score1, score2, score3, score4, score5, ignoring nulls
+    Then the overall_score for each row is:
+      | study_id | overall_score |
+      | S1       | 82.0          |
+      | S2       | 70.0          |
+      | S3       | 61.2          |
+    When potential_category is assigned based on overall_score
+    Then the potential_category for each row is:
+      | study_id | potential_category   |
+      | S1       | High Potential      |
+      | S2       | High Potential      |
+      | S3       | Moderate Potential  |
+    Then the final output contains all source columns, the aggregation columns, overall_score, and potential_category for each filtered row
 
-  Scenario Outline: Error when required columns are missing in the source table
-    Given the table "purgo_playground.compound_drug_analysis" is missing column "<missing_column>"
-    When the analysis is executed
-    Then an error is raised with message "Required column <missing_column> not found in source table"
+  Scenario: Filtering excludes rows with approved_flag != 1 or validation_status != "valid"
+    Given the table contains a row with approved_flag = 0 and validation_status = "valid"
+    When the data is filtered
+    Then the row is excluded from the filtered dataset
+    Given the table contains a row with approved_flag = 1 and validation_status = "invalid"
+    When the data is filtered
+    Then the row is excluded from the filtered dataset
 
-    Examples:
-      | missing_column |
-      | ic50           |
-      | auc            |
-      | efficacy       |
-      | sample_size    |
-      | study_id       |
-      | score1         |
-      | score2         |
-      | score3         |
-      | score4         |
-      | score5         |
-      | approved_flag  |
-      | validation_status |
-      | therapeutic_area |
+  Scenario: Aggregation uses only filtered rows
+    Given the table contains both valid and invalid rows for a therapeutic_area
+    When the data is filtered and aggregated
+    Then only rows with approved_flag = 1 and validation_status = "valid" are included in the aggregation
 
-  Scenario: Error when no rows match the filter criteria
-    Given the table "purgo_playground.compound_drug_analysis" contains no rows where approved_flag = 1 and validation_status = "valid"
-    When the analysis is executed
-    Then the final output is an empty result set
-
-  Scenario Outline: Error when join key therapeutic_area is null in either dataset
-    Given the filtered data contains a row with therapeutic_area = <null_value>
-    Or the aggregated data contains a row with therapeutic_area = <null_value>
+  Scenario: Join is performed on therapeutic_area using inner join
+    Given the filtered data and aggregated data
     When the join is performed on therapeutic_area
-    Then the row with null therapeutic_area is excluded from the joined result
+    Then only rows with matching therapeutic_area in both datasets are included in the result
 
+  Scenario Outline: overall_score calculation with null or missing score values
+    Given a row with the following scores:
+      | score1 | score2 | score3 | score4 | score5 |
+      | <s1>   | <s2>   | <s3>   | <s4>   | <s5>   |
+    When overall_score is calculated as the average of non-null scores
+    Then the overall_score is <expected_score>
     Examples:
-      | null_value |
-      | null       |
-      | ""         |
+      | s1    | s2    | s3    | s4    | s5    | expected_score |
+      | 80.0  | 90.0  | 85.0  | 95.0  | 100.0 | 90.0           |
+      | 80.0  | null  | 85.0  | 95.0  | 100.0 | 90.0           |
+      | null  | null  | 85.0  | 95.0  | 100.0 | 93.33          |
+      | null  | null  | null  | 95.0  | 100.0 | 97.5           |
+      | null  | null  | null  | null  | 100.0 | 100.0          |
+      | null  | null  | null  | null  | null  | null           |
 
-  Scenario: Error when all score columns are null for a row
-    Given a row in the filtered data has score1, score2, score3, score4, score5 all null
-    When overall_score is computed
-    Then overall_score is set to null
-    And potential_category is set to "Low Potential"
-
-  # Data-driven Scenarios for Categorization
-
-  Scenario Outline: Categorize results based on overall_score
-    Given a row with overall_score = <overall_score>
-    When the potential_category is determined
-    Then the potential_category is "<expected_category>"
-
+  Scenario Outline: potential_category assignment based on overall_score
+    Given a row with overall_score = <score>
+    When potential_category is assigned
+    Then the potential_category is <category>
     Examples:
-      | overall_score | expected_category   |
-      | 85            | High Potential      |
-      | 70            | High Potential      |
-      | 69.99         | Moderate Potential  |
-      | 65            | Moderate Potential  |
-      | 60            | Moderate Potential  |
-      | 59.99         | Low Potential       |
-      | 40            | Low Potential       |
-      | null          | Low Potential       |
+      | score | category           |
+      | 85.0  | High Potential     |
+      | 70.0  | High Potential     |
+      | 69.9  | Moderate Potential |
+      | 60.0  | Moderate Potential |
+      | 59.9  | Low Potential      |
+      | 0.0   | Low Potential      |
+      | null  | Low Potential      |
 
-  # Validation Rules
+  Scenario: Error when required columns are missing
+    Given the source table is missing one or more of the required columns: ic50, auc, efficacy, sample_size, study_id, score1, score2, score3, score4, score5, approved_flag, validation_status, therapeutic_area
+    When the analysis is executed
+    Then an error is raised with message "Required column(s) missing: <column_names>"
 
-  Scenario: Validation of numeric columns for aggregation
-    Given ic50, auc, efficacy, sample_size are numeric columns
-    When aggregating, null values in ic50, auc, efficacy are ignored for averages
-    And null values in sample_size are treated as 0 for summation
-    And study_count is the count of distinct study_id per therapeutic_area, ignoring null study_id
+  Scenario: Error when no rows match filter criteria
+    Given the table contains no rows where approved_flag = 1 and validation_status = "valid"
+    When the data is filtered
+    Then the filtered dataset is empty
+    And the final output is empty
 
-  Scenario: Validation of score columns for overall_score
-    Given score1, score2, score3, score4, score5 are numeric columns
-    When computing overall_score, only non-null scores are included in the average
-    If all scores are null, overall_score is set to null
+  Scenario: Data type validation for numeric columns
+    Given a row where ic50, auc, efficacy, sample_size, score1, score2, score3, score4, or score5 contain non-numeric values
+    When the analysis is executed
+    Then an error is raised with message "Invalid data type in column: <column_name>"
 
-  # Output Specification
+  Scenario: Output schema validation
+    Given the final output is produced
+    Then the output contains the following columns:
+      | study_id | compound_id | mutation_id | therapeutic_area | drug_name | ic50 | auc | efficacy | toxicity | potency | sample_size | mutation_frequency | mutation_severity | compound_concentration | cell_viability | growth_inhibition | result | approved_flag | validation_status | status | created_by | score1 | score2 | score3 | score4 | score5 | avg_ic50 | avg_auc | avg_efficacy | total_sample_size | study_count | overall_score | potential_category |
 
-  Scenario: Output includes all required columns
-    Given the final output is generated
-    Then it includes all columns from "purgo_playground.compound_drug_analysis"
-    And the following computed columns: avg_ic50, avg_auc, avg_efficacy, total_sample_size, study_count, overall_score, potential_category
-
-  # Null and Missing Value Handling
-
-  Scenario: Handling of null or missing values in key metrics
-    Given a row has null values in ic50, auc, efficacy, or sample_size
-    When performing aggregation
-    Then nulls in ic50, auc, efficacy are ignored for averages
-    And nulls in sample_size are treated as 0 for summation
-
-  Scenario: Handling of null or missing values in score columns
-    Given a row has some or all score1-5 as null
-    When computing overall_score
-    Then only non-null scores are averaged
-    If all are null, overall_score is null and potential_category is "Low Potential"
-
-  # Output Destination
-
-  Scenario: Output is displayed or returned as a DataFrame
+  Scenario: Display of final results
     Given the analysis completes successfully
-    Then the final result is displayed or returned as a DataFrame
-    And is not written to a new table unless explicitly specified
+    When the final output is displayed
+    Then all columns from the output schema are shown for each filtered row
 
+  Scenario: No validation part is executed
+    Given the requirement states "Do not execute Validation part"
+    When the analysis is executed
+    Then no validation logic from delivery_dt_validation_result or other validation tables is run
