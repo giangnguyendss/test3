@@ -1,131 +1,178 @@
 spark.catalog.setCurrentCatalog("purgo_databricks")
 
-# =============================================================================
-# Compound Drug Screening Analysis - PySpark Implementation for Databricks
-# =============================================================================
-# This script performs filtering, aggregation, joining, scoring, and categorization
-# on compound screening analysis data from purgo_playground.compound_drug_analysis.
-# It generates insights by therapeutic_area, computes overall_score, and categorizes
-# results as High/Moderate/Low Potential.
-# =============================================================================
+# /*
+#  * Databricks PySpark Production Pipeline for Compound Drug Screening Analysis
+#  * 
+#  * This script performs:
+#  *   - Data type and schema validation
+#  *   - Filtering for approved and valid compound studies
+#  *   - Aggregation by therapeutic_area (avg_ic50, avg_auc, avg_efficacy, total_sample_size, study_count)
+#  *   - Join of filtered data with aggregation
+#  *   - Calculation of overall_score (average of non-null score1-5)
+#  *   - Categorization into High/Moderate/Low Potential
+#  *   - Output of all source columns, aggregation columns, overall_score, and potential_category
+#  * 
+#  * Unity Catalog: purgo_databricks
+#  * Schema: purgo_playground
+#  * Source Table: purgo_playground.compound_drug_analysis
+#  * Output Table: purgo_playground.compound_screening_result_analysis
+#  * 
+#  * No validation part is executed (per requirements)
+#  */
 
-# =============================================================================
-# Imports (all required are included, with pip package comments)
-# =============================================================================
+# ---------------------------
+# # Imports
+# ---------------------------
 from pyspark.sql import functions as F  
-from pyspark.sql.types import DoubleType, StringType  
-from pyspark.sql.window import Window  
+from pyspark.sql.types import DoubleType, LongType  
 
-# =============================================================================
-# Section: Read Source Data
-# =============================================================================
-# Read from Unity Catalog table purgo_playground.compound_drug_analysis
-compound_df = spark.table("purgo_playground.compound_drug_analysis")
+# ---------------------------
+# # Utility Functions
+# ---------------------------
 
-# =============================================================================
-# Section: Filter Analysis
-# =============================================================================
-# Only include rows where approved_flag = 1 and validation_status = 'valid'
-filtered_df = compound_df.filter(
+# Function to check required columns exist in DataFrame
+def assert_required_columns(df, required_cols):
+    missing = [col for col in required_cols if col not in df.columns]
+    if missing:
+        raise RuntimeError(f"Required column(s) missing: {', '.join(missing)}")
+
+# Function to check data types of numeric columns
+def assert_numeric_columns(df, numeric_cols):
+    for col in numeric_cols:
+        if col in df.columns:
+            # Try casting to double and check for nulls where original is not null
+            bad_type_count = df.withColumn(
+                "__casted", F.col(col).cast("double")
+            ).filter(
+                (F.col(col).isNotNull()) & (F.col("__casted").isNull())
+            ).limit(1).count()
+            if bad_type_count > 0:
+                raise RuntimeError(f"Invalid data type in column: {col}")
+
+# Function to calculate overall_score (average of non-null scores)
+def calc_overall_score_expr():
+    # Use array, filter, and aggregate to ignore nulls
+    return F.when(
+        (F.col("score1").isNull()) & (F.col("score2").isNull()) & (F.col("score3").isNull()) & (F.col("score4").isNull()) & (F.col("score5").isNull()),
+        F.lit(None)
+    ).otherwise(
+        F.expr("""
+            aggregate(
+                filter(array(score1, score2, score3, score4, score5), x -> x is not null),
+                cast(0.0 as double),
+                (acc, x) -> acc + x
+            ) / size(filter(array(score1, score2, score3, score4, score5), x -> x is not null))
+        """)
+    )
+
+# Function to assign potential_category based on overall_score
+def calc_potential_category_expr():
+    return F.when(
+        (F.col("overall_score") >= 70) & (F.col("overall_score") <= 100), F.lit("High Potential")
+    ).when(
+        (F.col("overall_score") >= 60) & (F.col("overall_score") < 70), F.lit("Moderate Potential")
+    ).otherwise(F.lit("Low Potential"))
+
+# ---------------------------
+# # Read Source Table
+# ---------------------------
+
+try:
+    df_src = spark.table("purgo_playground.compound_drug_analysis")
+except Exception as e:
+    raise RuntimeError(f"Error reading source table: {e}")
+
+# ---------------------------
+# # Schema and Data Type Validation
+# ---------------------------
+
+required_columns = [
+    "study_id", "compound_id", "mutation_id", "therapeutic_area", "drug_name",
+    "ic50", "auc", "efficacy", "toxicity", "potency", "sample_size",
+    "mutation_frequency", "mutation_severity", "compound_concentration",
+    "cell_viability", "growth_inhibition", "result", "approved_flag",
+    "validation_status", "status", "created_by",
+    "score1", "score2", "score3", "score4", "score5"
+]
+
+numeric_columns = [
+    "ic50", "auc", "efficacy", "sample_size",
+    "score1", "score2", "score3", "score4", "score5"
+]
+
+assert_required_columns(df_src, required_columns)
+assert_numeric_columns(df_src, numeric_columns)
+
+# ---------------------------
+# # Filter for Approved and Valid Studies
+# ---------------------------
+
+df_filtered = df_src.filter(
     (F.col("approved_flag") == 1) & (F.col("validation_status") == "valid")
 )
 
-# Exclude rows where therapeutic_area is null or empty string for join/aggregation
-filtered_df = filtered_df.filter(
-    (F.col("therapeutic_area").isNotNull()) & (F.col("therapeutic_area") != "")
+# ---------------------------
+# # Aggregation by therapeutic_area
+# ---------------------------
+
+df_agg = df_filtered.groupBy("therapeutic_area").agg(
+    F.avg("ic50").alias("avg_ic50"),
+    F.avg("auc").alias("avg_auc"),
+    F.avg("efficacy").alias("avg_efficacy"),
+    F.sum("sample_size").alias("total_sample_size"),
+    F.countDistinct("study_id").alias("study_count")
 )
 
-# =============================================================================
-# Section: Aggregation by therapeutic_area
-# =============================================================================
-# Compute average ic50, auc, efficacy (ignoring nulls), total sample_size (null as 0), and count of distinct study_id (ignoring nulls)
-agg_df = (
-    filtered_df
-    .groupBy("therapeutic_area")
-    .agg(
-        F.avg("ic50").alias("avg_ic50"),
-        F.avg("auc").alias("avg_auc"),
-        F.avg("efficacy").alias("avg_efficacy"),
-        F.sum(F.coalesce(F.col("sample_size"), F.lit(0))).alias("total_sample_size"),
-        F.countDistinct(F.col("study_id")).alias("study_count")
-    )
+# ---------------------------
+# # Join Filtered Data with Aggregation
+# ---------------------------
+
+df_joined = df_filtered.join(
+    df_agg,
+    on="therapeutic_area",
+    how="inner"
 )
 
-# =============================================================================
-# Section: Join Analysis
-# =============================================================================
-# Inner join filtered data with aggregated data on therapeutic_area
-joined_df = (
-    filtered_df
-    .join(agg_df, on="therapeutic_area", how="inner")
+# ---------------------------
+# # Result Analysis: overall_score and potential_category
+# ---------------------------
+
+df_result = df_joined.withColumn(
+    "overall_score", calc_overall_score_expr()
+).withColumn(
+    "potential_category", calc_potential_category_expr()
 )
 
-# =============================================================================
-# Section: Result Analysis - Compute overall_score and potential_category
-# =============================================================================
+# ---------------------------
+# # Output: All Source Columns + Aggregation + Result Analysis
+# ---------------------------
 
-# Compute overall_score as average of non-null scores (score1-5); if all null, overall_score is null
-joined_df = joined_df.withColumn(
-    "overall_score",
-    F.when(
-        (F.col("score1").isNull()) &
-        (F.col("score2").isNull()) &
-        (F.col("score3").isNull()) &
-        (F.col("score4").isNull()) &
-        (F.col("score5").isNull()),
-        F.lit(None).cast(DoubleType())
-    ).otherwise(
-        (
-            F.coalesce(F.col("score1"), F.lit(0.0)) +
-            F.coalesce(F.col("score2"), F.lit(0.0)) +
-            F.coalesce(F.col("score3"), F.lit(0.0)) +
-            F.coalesce(F.col("score4"), F.lit(0.0)) +
-            F.coalesce(F.col("score5"), F.lit(0.0))
-        ) /
-        (
-            F.when(F.col("score1").isNotNull(), F.lit(1)).otherwise(F.lit(0)) +
-            F.when(F.col("score2").isNotNull(), F.lit(1)).otherwise(F.lit(0)) +
-            F.when(F.col("score3").isNotNull(), F.lit(1)).otherwise(F.lit(0)) +
-            F.when(F.col("score4").isNotNull(), F.lit(1)).otherwise(F.lit(0)) +
-            F.when(F.col("score5").isNotNull(), F.lit(1)).otherwise(F.lit(0))
-        )
-    )
-)
+output_columns = [
+    "study_id", "compound_id", "mutation_id", "therapeutic_area", "drug_name",
+    "ic50", "auc", "efficacy", "toxicity", "potency", "sample_size",
+    "mutation_frequency", "mutation_severity", "compound_concentration",
+    "cell_viability", "growth_inhibition", "result", "approved_flag",
+    "validation_status", "status", "created_by",
+    "score1", "score2", "score3", "score4", "score5",
+    "avg_ic50", "avg_auc", "avg_efficacy", "total_sample_size", "study_count",
+    "overall_score", "potential_category"
+]
 
-# Categorize potential_category based on overall_score
-joined_df = joined_df.withColumn(
-    "potential_category",
-    F.when(F.col("overall_score").isNull(), F.lit("Low Potential"))
-     .when((F.col("overall_score") >= 70) & (F.col("overall_score") <= 100), F.lit("High Potential"))
-     .when((F.col("overall_score") >= 60) & (F.col("overall_score") < 70), F.lit("Moderate Potential"))
-     .otherwise(F.lit("Low Potential"))
-)
+# Ensure output DataFrame has all required columns in correct order
+df_final = df_result.select(*output_columns)
 
-# =============================================================================
-# Section: Final Output
-# =============================================================================
-# Select all original columns plus computed columns for output
-final_cols = (
-    compound_df.columns +
-    ["avg_ic50", "avg_auc", "avg_efficacy", "total_sample_size", "study_count", "overall_score", "potential_category"]
-)
+# ---------------------------
+# # Write Output Table (Delta, Overwrite)
+# ---------------------------
 
-# Ensure all selected columns exist in joined_df (for schema evolution safety)
-final_cols = [col for col in final_cols if col in joined_df.columns]
+df_final.write.format("delta").mode("overwrite").option("overwriteSchema", "true").saveAsTable("purgo_playground.compound_screening_result_analysis")
 
-final_output_df = joined_df.select(*final_cols)
+# ---------------------------
+# # Display Final Results
+# ---------------------------
 
-# Display the final result
-final_output_df.show(truncate=False)
+df_final.show(truncate=False)
 
-# =============================================================================
-# Section: Window Analytics Example (optional, for further analytics)
-# =============================================================================
-# Example: Rank compounds by overall_score within each therapeutic_area
-window_spec = Window.partitionBy("therapeutic_area").orderBy(F.desc("overall_score"))
-ranked_df = final_output_df.withColumn("score_rank", F.rank().over(window_spec))
-# ranked_df.show(truncate=False)  # Uncomment to display ranked results
-
-# =============================================================================
-# End of Script
-# =============================================================================
+# /*
+#  * End of Databricks PySpark Production Pipeline for Compound Drug Screening Analysis
+#  */
