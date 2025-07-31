@@ -1,140 +1,162 @@
 Feature: Backup and Vacuum Operations for customer_360_raw Table
 
-  The system must efficiently back up the purgo_databricks.purgo_playground.customer_360_raw table as compressed parquet files partitioned by state, and perform a vacuum operation to remove records older than 30 days, ensuring data quality and storage optimization.
+  The system must provide a PySpark script to back up the purgo_databricks.purgo_playground.customer_360_raw table as compressed parquet files partitioned by state in a Databricks volume, and perform a vacuum operation to retain only records from the last 30 days.
 
   Background:
-    Given the source table is purgo_databricks.purgo_playground.customer_360_raw
-    And the backup destination is the Databricks volume at path "/Volumes/customer_360_raw_backup"
-    And the backup format is parquet with "snappy" compression
-    And the backup files must be partitioned by the "state" column
-    And all columns from the source table must be included in the backup
-    And the vacuum operation must retain only records from the last 30 days (720 hours) based on the "creation_date" column
-    And the vacuum operation must be a hard delete (permanent removal)
-    And all backup and vacuum operations must be logged in purgo_playground.customer_360_raw_backup_log with timestamp, status, operation_type, record_count, and error_message
-    And the backup operation must be a full backup (not incremental)
-    And the backup retention policy is to retain files for 90 days
+    Given the Unity Catalog is set to "purgo_databricks"
+    And the schema is set to "purgo_playground"
+    And the source table is "customer_360_raw"
+    And the backup volume path is "/Volumes/customer_360_raw_backup"
+    And the backup must be written as parquet files with "snappy" compression
+    And the parquet files must be partitioned by the "state" column
+    And the backup must include all columns from the source table without transformation
+    And the backup must be a full snapshot, overwriting any previous backup at the target location
+    And the expected folder structure is "/Volumes/customer_360_raw_backup/state=XX/"
+    And the table "customer_360_raw" is a Delta table
+    And the date column for retention is "creation_date"
+    And the vacuum operation must retain only records with "creation_date" within the last 30 days (inclusive)
+    And the vacuum operation must use the default retention period of 168 hours (7 days)
+    And all operations must be logged to "customer_360_raw_backup_log" with timestamp, status, operation_type, record_count, and error_message
 
-  Scenario: Successful full backup of customer_360_raw table to compressed parquet partitioned by state
-    Given the customer_360_raw table contains 100,000 records with valid data
+  Scenario: Successful backup of customer_360_raw table to compressed parquet files partitioned by state
+    Given the "customer_360_raw" table contains records with valid data in all columns
     When the backup PySpark script is executed
-    Then a full backup of all 100,000 records is written as parquet files to "/Volumes/customer_360_raw_backup"
-    And the parquet files are compressed using "snappy"
-    And the files are partitioned by the "state" column
-    And all columns are included in the backup
-    And a log entry is created in customer_360_raw_backup_log with
-      | status  | operation_type | record_count | error_message |
-      | SUCCESS | BACKUP        | 100000       | NULL          |
+    Then parquet files are written to "/Volumes/customer_360_raw_backup" partitioned by "state"
+    And the parquet files use "snappy" compression
+    And all columns from the source table are present in the backup files
+    And the backup operation overwrites any existing data at the backup location
+    And the record count in the backup matches the record count in the source table
+    And a log entry is created in "customer_360_raw_backup_log" with status "SUCCESS", operation_type "BACKUP", the correct record_count, and error_message as null
 
-  Scenario: Successful vacuum operation removes records older than 30 days
-    Given the customer_360_raw table contains records with "creation_date" ranging from 2024-01-01 to 2024-07-01
-    And today is 2024-07-01
+  Scenario: Backup fails due to missing backup volume path
+    Given the backup volume path "/Volumes/customer_360_raw_backup" does not exist
+    When the backup PySpark script is executed
+    Then the backup operation fails
+    And no parquet files are written
+    And a log entry is created in "customer_360_raw_backup_log" with status "FAILURE", operation_type "BACKUP", record_count as 0, and error_message containing "Backup volume path not found"
+
+  Scenario: Backup fails due to missing "state" column in source table
+    Given the "customer_360_raw" table does not contain the "state" column
+    When the backup PySpark script is executed
+    Then the backup operation fails
+    And no parquet files are written
+    And a log entry is created in "customer_360_raw_backup_log" with status "FAILURE", operation_type "BACKUP", record_count as 0, and error_message containing "Partition column 'state' not found"
+
+  Scenario: Successful deletion of records older than 30 days and vacuum operation
+    Given the "customer_360_raw" table contains records with "creation_date" older and newer than 30 days from current date
     When the vacuum PySpark script is executed
-    Then only records with "creation_date" >= 2024-06-01 remain in the table
-    And all records with "creation_date" < 2024-06-01 are permanently deleted
-    And a log entry is created in customer_360_raw_backup_log with
-      | status  | operation_type | record_count | error_message |
-      | SUCCESS | VACUUM        | <deleted_count> | NULL        |
+    Then all records with "creation_date" older than 30 days are deleted from the table
+    And only records with "creation_date" within the last 30 days (inclusive) remain
+    And the Delta VACUUM command is executed with the default retention period of 168 hours
+    And obsolete files are removed from storage
+    And a log entry is created in "customer_360_raw_backup_log" with status "SUCCESS", operation_type "VACUUM", the correct record_count (remaining records), and error_message as null
 
-  Scenario: Backup operation fails due to missing volume path
-    Given the backup destination path "/Volumes/customer_360_raw_backup" does not exist
-    When the backup PySpark script is executed
-    Then the backup operation fails
-    And no files are written
-    And a log entry is created in customer_360_raw_backup_log with
-      | status  | operation_type | record_count | error_message                |
-      | FAILED  | BACKUP         | 0            | "Backup path does not exist" |
-
-  Scenario: Backup operation fails due to insufficient storage
-    Given the backup destination path "/Volumes/customer_360_raw_backup" has less than 1GB free space
-    And the backup size is estimated to be 10GB
-    When the backup PySpark script is executed
-    Then the backup operation fails
-    And a log entry is created in customer_360_raw_backup_log with
-      | status  | operation_type | record_count | error_message                |
-      | FAILED  | BACKUP         | 0            | "Insufficient storage space" |
-
-  Scenario: Vacuum operation fails due to missing permissions
-    Given the executing user does not have DELETE permission on purgo_playground.customer_360_raw
+  Scenario: Vacuum operation fails due to non-Delta table
+    Given the "customer_360_raw" table is not a Delta table
     When the vacuum PySpark script is executed
     Then the vacuum operation fails
     And no records are deleted
-    And a log entry is created in customer_360_raw_backup_log with
-      | status  | operation_type | record_count | error_message                |
-      | FAILED  | VACUUM         | 0            | "Permission denied"          |
+    And a log entry is created in "customer_360_raw_backup_log" with status "FAILURE", operation_type "VACUUM", record_count as 0, and error_message containing "VACUUM operation requires a Delta table"
+
+  Scenario: Vacuum operation fails due to missing "creation_date" column
+    Given the "customer_360_raw" table does not contain the "creation_date" column
+    When the vacuum PySpark script is executed
+    Then the vacuum operation fails
+    And no records are deleted
+    And a log entry is created in "customer_360_raw_backup_log" with status "FAILURE", operation_type "VACUUM", record_count as 0, and error_message containing "Date column 'creation_date' not found"
 
   Scenario Outline: Data validation for backup and vacuum operations
-    Given the customer_360_raw table contains <record_count> records
-    And the backup destination path is <backup_path>
-    And the user has <permission> permission
+    Given the "customer_360_raw" table contains <record_count> records
+    And <invalid_condition>
     When the <operation> PySpark script is executed
-    Then the operation result is <status>
-    And a log entry is created in customer_360_raw_backup_log with
-      | status  | operation_type | record_count | error_message      |
-      | <status> | <operation_type> | <expected_count> | <error_message> |
+    Then the operation fails
+    And a log entry is created in "customer_360_raw_backup_log" with status "FAILURE", operation_type "<operation_type>", record_count as 0, and error_message containing "<expected_error>"
 
     Examples:
-      | record_count | backup_path                        | permission | operation | status   | operation_type | expected_count | error_message                |
-      | 50000        | /Volumes/customer_360_raw_backup   | granted    | BACKUP    | SUCCESS  | BACKUP         | 50000          | NULL                        |
-      | 0            | /Volumes/customer_360_raw_backup   | granted    | BACKUP    | SUCCESS  | BACKUP         | 0              | NULL                        |
-      | 1000         | /Volumes/customer_360_raw_backup   | denied     | VACUUM    | FAILED   | VACUUM         | 0              | "Permission denied"         |
-      | 1000         | /invalid/path                     | granted    | BACKUP    | FAILED   | BACKUP         | 0              | "Backup path does not exist"|
+      | record_count | invalid_condition                                 | operation | operation_type | expected_error                                 |
+      | 1000         | some records have null in "state" column          | backup    | BACKUP        | Null values found in partition column 'state'   |
+      | 500          | "creation_date" column contains invalid date      | vacuum    | VACUUM        | Invalid date format in 'creation_date' column   |
+      | 0            | table is empty                                    | backup    | BACKUP        | Source table is empty                          |
+      | 0            | table is empty                                    | vacuum    | VACUUM        | Source table is empty                          |
 
-  Scenario: Backup files older than 90 days are deleted as per retention policy
-    Given the backup destination path "/Volumes/customer_360_raw_backup" contains parquet files older than 90 days
-    When the backup retention cleanup script is executed
-    Then all backup files older than 90 days are deleted
-    And a log entry is created in customer_360_raw_backup_log with
-      | status  | operation_type | record_count | error_message |
-      | SUCCESS | RETENTION_CLEANUP | <deleted_count> | NULL      |
+  Scenario: Validation of backup completeness and data integrity
+    Given the backup operation has completed successfully
+    When the record count in the backup files is compared to the source table
+    Then the counts must match exactly
+    And the schema of the backup files must match the source table schema
+    And all data values must be identical between source and backup
 
-  Scenario: Backup operation masks PII columns if required
-    Given the backup configuration specifies masking for "email" and "phone" columns
+  Scenario: Logging of backup and vacuum operations
+    Given a backup or vacuum operation is performed
+    When the operation completes (success or failure)
+    Then a log entry is created in "customer_360_raw_backup_log" with the following fields:
+      | timestamp         | string, ISO 8601 format, not null           |
+      | status            | string, values: "SUCCESS" or "FAILURE"      |
+      | operation_type    | string, values: "BACKUP" or "VACUUM"        |
+      | record_count      | bigint, number of records processed         |
+      | error_message     | string, nullable, error details if failure  |
+
+  Scenario: Backup operation with incremental logic (if specified)
+    Given the backup mode is set to "incremental"
+    And the last backup timestamp is "2024-07-01T00:00:00Z"
     When the backup PySpark script is executed
-    Then the "email" and "phone" columns in the backup parquet files are masked using the format "*****"
-    And all other columns are included as-is
-    And a log entry is created in customer_360_raw_backup_log with
-      | status  | operation_type | record_count | error_message |
-      | SUCCESS | BACKUP         | <record_count> | NULL        |
+    Then only records in "customer_360_raw" with "creation_date" > "2024-07-01" are written to the backup location
+    And the backup files are partitioned by "state"
+    And a log entry is created in "customer_360_raw_backup_log" with status "SUCCESS", operation_type "BACKUP", the correct record_count, and error_message as null
 
-  Scenario: Backup operation is scheduled to run daily at 02:00 UTC
-    Given the backup schedule is configured for daily execution at 02:00 UTC
-    When the scheduled time is reached
-    Then the backup PySpark script is triggered automatically
-    And the backup operation completes as per requirements
-
-  Scenario: Vacuum operation is scheduled to run weekly at 03:00 UTC
-    Given the vacuum schedule is configured for weekly execution at 03:00 UTC
-    When the scheduled time is reached
-    Then the vacuum PySpark script is triggered automatically
-    And the vacuum operation completes as per requirements
-
-  Scenario: Backup operation includes all columns and preserves data types
-    Given the customer_360_raw table contains columns with the following data types:
-      | column               | type    |
-      | id                   | bigint  |
-      | name                 | string  |
-      | email                | string  |
-      | phone                | string  |
-      | company              | string  |
-      | job_title            | string  |
-      | address              | string  |
-      | city                 | string  |
-      | state                | string  |
-      | country              | string  |
-      | industry             | string  |
-      | account_manager      | string  |
-      | creation_date        | date    |
-      | last_interaction_date| date    |
-      | purchase_history     | string  |
-      | notes                | string  |
-      | zip                  | string  |
+  Scenario: Backup operation with timestamped/versioned output (if specified)
+    Given the backup mode is set to "versioned"
+    And the current timestamp is "2024-07-30T12:00:00Z"
     When the backup PySpark script is executed
-    Then the parquet files contain all columns with the same data types as the source table
+    Then the backup files are written to "/Volumes/customer_360_raw_backup/2024-07-30T12-00-00/"
+    And the files are partitioned by "state"
+    And a log entry is created in "customer_360_raw_backup_log" with status "SUCCESS", operation_type "BACKUP", the correct record_count, and error_message as null
 
-  Scenario: Backup operation fails if source table is empty
-    Given the customer_360_raw table contains 0 records
+  Scenario: Rollback strategy before vacuum (if required)
+    Given a backup operation has completed successfully
+    And a vacuum operation is about to be performed
+    When the vacuum PySpark script is executed
+    Then the backup files must be available for restore in case of failure
+    And a log entry is created in "customer_360_raw_backup_log" with status "SUCCESS", operation_type "VACUUM", the correct record_count, and error_message as null
+
+  Scenario: Error handling for insufficient permissions
+    Given the user executing the script does not have write permissions to the backup volume
     When the backup PySpark script is executed
-    Then the backup operation completes with status SUCCESS
-    And a log entry is created in customer_360_raw_backup_log with
-      | status  | operation_type | record_count | error_message |
-      | SUCCESS | BACKUP         | 0            | NULL          |
+    Then the backup operation fails
+    And a log entry is created in "customer_360_raw_backup_log" with status "FAILURE", operation_type "BACKUP", record_count as 0, and error_message containing "Permission denied"
+
+  Scenario: Error handling for insufficient permissions on source table
+    Given the user executing the script does not have read permissions on "customer_360_raw"
+    When the backup or vacuum PySpark script is executed
+    Then the operation fails
+    And a log entry is created in "customer_360_raw_backup_log" with status "FAILURE", operation_type "<operation_type>", record_count as 0, and error_message containing "Permission denied"
+
+  Scenario: Error handling for invalid compression type
+    Given the backup compression type is set to "invalid_codec"
+    When the backup PySpark script is executed
+    Then the backup operation fails
+    And a log entry is created in "customer_360_raw_backup_log" with status "FAILURE", operation_type "BACKUP", record_count as 0, and error_message containing "Unsupported compression codec"
+
+  Scenario: Error handling for invalid backup location path format
+    Given the backup volume path is set to an invalid format (e.g., "C:\invalid\path")
+    When the backup PySpark script is executed
+    Then the backup operation fails
+    And a log entry is created in "customer_360_raw_backup_log" with status "FAILURE", operation_type "BACKUP", record_count as 0, and error_message containing "Invalid backup path format"
+
+  Scenario: Error handling for missing required columns in backup
+    Given the "customer_360_raw" table is missing one or more required columns
+    When the backup PySpark script is executed
+    Then the backup operation fails
+    And a log entry is created in "customer_360_raw_backup_log" with status "FAILURE", operation_type "BACKUP", record_count as 0, and error_message containing "Missing required columns"
+
+  Scenario: Error handling for data type mismatch in backup
+    Given the "customer_360_raw" table contains a column with an unexpected data type
+    When the backup PySpark script is executed
+    Then the backup operation fails
+    And a log entry is created in "customer_360_raw_backup_log" with status "FAILURE", operation_type "BACKUP", record_count as 0, and error_message containing "Data type mismatch"
+
+  Scenario: Error handling for backup operation timeout
+    Given the backup operation exceeds the maximum allowed execution time of 2 hours
+    When the backup PySpark script is executed
+    Then the backup operation fails
+    And a log entry is created in "customer_360_raw_backup_log" with status "FAILURE", operation_type "BACKUP", record_count as 0, and error_message containing "Backup operation timed out"
