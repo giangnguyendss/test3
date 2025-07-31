@@ -1,0 +1,100 @@
+Feature: Advanced Sales KPI Calculation and Analysis
+
+  This feature calculates advanced sales KPIs including Total Sales, Sales Trends, and Final KPI aggregation using the 'purgo_playground.sales_window' table. The outputs are: Total_Sales, Sales_Trends, and Final_KPI.
+
+  Background:
+    Given the source table "purgo_playground.sales_window" exists in Unity Catalog "purgo_databricks" and schema "purgo_playground"
+    And the table has columns: Sales_ID (bigint), Product (string), Region (string), Year (bigint), Quarter (bigint), Sales_Amount (bigint)
+    And all calculations must exclude rows where Product, Region, Year, Quarter, or Sales_Amount are null
+    And "quarter" is combined with "year" for unique time-based grouping and ordering in Sales_Trends
+    And "Average Sales_Amount" is defined as the mean Sales_Amount per Region and Product group
+
+  # Total_Sales Calculation
+  Scenario: Calculate Total and Average Sales_Amount by Region and Product
+    Given the sales_window table contains sales data with non-null values for Product, Region, Year, Quarter, and Sales_Amount
+    When the data is grouped by Region and Product
+    Then calculate "Total_Sales_Amount" as the sum of Sales_Amount for each Region and Product
+    And calculate "Average_Sales_Amount" as the average of Sales_Amount for each Region and Product
+    And output columns: Region, Product, Total_Sales_Amount (bigint), Average_Sales_Amount (double)
+    And exclude any group where Total_Sales_Amount is null or zero
+
+  # Sales_Trends Calculation
+  Scenario: Calculate Sales Trends with Previous Sales_Amount and Sales_Change by Region, Product, Year, and Quarter
+    Given the sales_window table contains sales data with non-null values for Product, Region, Year, Quarter, and Sales_Amount
+    When the data is grouped by Region, Product, Year, and Quarter and ordered by Year ascending, Quarter ascending
+    Then for each row, set "Previous_Sales_Amount" as the Sales_Amount of the previous quarter for the same Region and Product (null if no previous quarter)
+    And calculate "Sales_Change" as Sales_Amount minus Previous_Sales_Amount (null if Previous_Sales_Amount is null)
+    And output columns: Region, Product, Year, Quarter, Sales_Amount, Previous_Sales_Amount, Sales_Change
+    And for the first quarter of each Region and Product, Previous_Sales_Amount and Sales_Change must be null
+
+  # Final_KPI Aggregation
+  Scenario: Aggregate KPIs by joining Total_Sales, Top_Selling_Products, and Sales_Trends
+    Given the Total_Sales output with columns: Region, Product, Total_Sales_Amount, Average_Sales_Amount
+    And the Top_Selling_Products output is defined as the top 3 Products by Total_Sales_Amount per Region
+    And the Sales_Trends output with columns: Region, Product, Year, Quarter, Sales_Amount, Previous_Sales_Amount, Sales_Change
+    When joining Total_Sales and Top_Selling_Products on Region and Product
+    And joining the result with Sales_Trends on Region and Product
+    Then output columns: Region, Product, Total_Sales_Amount, Average_Sales_Amount, Is_Top_Selling_Product (boolean), Year, Quarter, Sales_Amount, Previous_Sales_Amount, Sales_Change
+    And set Is_Top_Selling_Product to true if Product is in the top 3 by Total_Sales_Amount for the Region, else false
+
+  # Final Output Display
+  Scenario: Display the results of Total_Sales, Sales_Trends, and Final_KPI separately
+    Given the calculations for Total_Sales, Sales_Trends, and Final_KPI are complete
+    When displaying the results
+    Then show the Total_Sales output with columns: Region, Product, Total_Sales_Amount, Average_Sales_Amount
+    And show the Sales_Trends output with columns: Region, Product, Year, Quarter, Sales_Amount, Previous_Sales_Amount, Sales_Change
+    And show the Final_KPI output with columns: Region, Product, Total_Sales_Amount, Average_Sales_Amount, Is_Top_Selling_Product, Year, Quarter, Sales_Amount, Previous_Sales_Amount, Sales_Change
+
+  # Error Scenarios
+
+  Scenario Outline: Handle missing or null values in key columns
+    Given a row in sales_window where <Column> is null
+    When calculating Total_Sales, Sales_Trends, or Final_KPI
+    Then exclude the row from all calculations and outputs
+
+    Examples:
+      | Column         |
+      | Product        |
+      | Region         |
+      | Year           |
+      | Quarter        |
+      | Sales_Amount   |
+
+  Scenario: Handle empty sales_window table
+    Given the sales_window table is empty
+    When calculating Total_Sales, Sales_Trends, or Final_KPI
+    Then the output for each calculation must be an empty result set with the correct schema
+
+  Scenario: Handle case where a Region has fewer than 3 Products for Top_Selling_Products
+    Given a Region with fewer than 3 Products in sales_window
+    When calculating Top_Selling_Products
+    Then include all available Products for that Region as Top_Selling_Products
+
+  Scenario: Validate data types and formats in outputs
+    Given the outputs for Total_Sales, Sales_Trends, and Final_KPI
+    Then ensure all columns have the following data types:
+      | Column                  | Data Type |
+      | Region                  | string    |
+      | Product                 | string    |
+      | Total_Sales_Amount      | bigint    |
+      | Average_Sales_Amount    | double    |
+      | Is_Top_Selling_Product  | boolean   |
+      | Year                    | bigint    |
+      | Quarter                 | bigint    |
+      | Sales_Amount            | bigint    |
+      | Previous_Sales_Amount   | bigint    |
+      | Sales_Change            | bigint    |
+
+  Scenario Outline: Error message for invalid data types in input
+    Given a row in sales_window where <Column> is not of the expected data type
+    When attempting to process the row
+    Then log an error message: "Invalid data type in column <Column>: expected <ExpectedType>"
+
+    Examples:
+      | Column        | ExpectedType |
+      | Sales_ID      | bigint       |
+      | Product       | string       |
+      | Region        | string       |
+      | Year          | bigint       |
+      | Quarter       | bigint       |
+      | Sales_Amount  | bigint       |
