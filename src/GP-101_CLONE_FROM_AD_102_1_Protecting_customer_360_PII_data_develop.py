@@ -1,262 +1,197 @@
-%pip install pycryptodome
+%pip install cryptography
 
 spark.catalog.setCurrentCatalog("purgo_databricks")
 
-# ------------------------------------------------------------------------------------
-# Databricks PySpark Script: Encrypt PII Columns in customer_360_raw_clone
-# ------------------------------------------------------------------------------------
+# ----------------------------------------------------------------------------------------
+# Databricks PySpark Script: Encrypt PII columns in purgo_playground.customer_360_raw_clone
+# ----------------------------------------------------------------------------------------
 # This script:
 #   - Drops and recreates purgo_playground.customer_360_raw_clone as a replica of purgo_playground.customer_360_raw
-#   - Encrypts columns: name, email, phone, zip using AES-256-CBC (random key/IV, base64-encoded)
-#   - Saves the encryption key as JSON in /Volumes/agilisium_playground/purgo_playground/de_dq/encryption_key_<current_datetime>.json
-#   - Logs the process to purgo_playground.pii_encryption_log
-#   - Handles all error scenarios and logs failures
-#   - Validates encrypted columns are base64-encoded
-#   - All code is Databricks production-ready and follows best practices
-# ------------------------------------------------------------------------------------
+#   - Encrypts columns: name, email, phone, zip using AES-256 (CBC, PKCS7 padding)
+#   - Saves the encryption key as a JSON file in /Volumes/agilisium_playground/purgo_playground/de_dq
+#   - Logs process status to purgo_playground.pii_encryption_log
+#   - Handles errors and edge cases as per requirements
+# ----------------------------------------------------------------------------------------
 
-# -------------------- IMPORTS --------------------
-from pyspark.sql import SparkSession  # SparkSession is already available in Databricks
-from pyspark.sql import Row  
-from pyspark.sql.types import StringType  
-from pyspark.sql.functions import col, udf, current_timestamp  
+# ----------------------------------------
+# Imports
+# ----------------------------------------
 import base64  
-import json  
-from datetime import datetime  
-import getpass  
-from Crypto.Cipher import AES  
-from Crypto.Random import get_random_bytes  
+import json    
+import os      
+from datetime import datetime, timezone  
+from pyspark.sql import functions as F  
+from pyspark.sql.types import StringType, StructType, StructField, LongType, DateType  
+from pyspark.sql.utils import AnalysisException  
+from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes  
+from cryptography.hazmat.backends import default_backend  
+from cryptography.hazmat.primitives import padding  
 
-# -------------------- CONFIGURATION --------------------
-# Block comment: Define constants and parameters
-PII_COLUMNS = ["name", "email", "phone", "zip"]
-SOURCE_TABLE = "purgo_playground.customer_360_raw"
-CLONE_TABLE = "purgo_playground.customer_360_raw_clone"
-LOG_TABLE = "purgo_playground.pii_encryption_log"
+# ----------------------------------------
+# Configuration and Constants
+# ----------------------------------------
+CATALOG = "purgo_databricks"
+SCHEMA = "purgo_playground"
+SRC_TABLE = f"{CATALOG}.{SCHEMA}.customer_360_raw"
+CLONE_TABLE = f"{CATALOG}.{SCHEMA}.customer_360_raw_clone"
+LOG_TABLE = f"{CATALOG}.{SCHEMA}.pii_encryption_log"
 VOLUME_PATH = "/Volumes/agilisium_playground/purgo_playground/de_dq"
-ALGORITHM = "AES-256-CBC"
-PROCESS_NAME = "pii_encrypt"
-USER = getpass.getuser()
+PII_COLS = ["name", "email", "phone", "zip"]
+ENCRYPTION_ALGO = "AES-256"
+PROCESS_NAME = "pii_encryption"
+USER = os.environ.get("USER", "databricks_user")  # fallback for Databricks
 
-# -------------------- UTILITY: LOGGING FUNCTION --------------------
-def log_activity(process_name, source_table, target_table, encrypted_columns, key_file, status, timestamp, user):
-    """
-    Write a log entry to the pii_encryption_log table.
-    """
-    log_row = Row(
-        process_name=process_name,
-        source_table=source_table,
-        target_table=target_table,
-        encrypted_columns=encrypted_columns,
-        key_file=key_file,
-        status=status,
-        timestamp=timestamp,
-        user=user
-    )
-    spark.createDataFrame([log_row]).write.format("delta").mode("append").saveAsTable(LOG_TABLE)
+# ----------------------------------------
+# Helper Functions for AES-256 Encryption/Decryption
+# ----------------------------------------
 
-# -------------------- STEP 1: VALIDATE SOURCE TABLE AND COLUMNS --------------------
-try:
-    src_df = spark.table(SOURCE_TABLE)
-    src_cols = set([f.name for f in src_df.schema.fields])
-    for colname in PII_COLUMNS:
-        if colname not in src_cols:
-            raise Exception(f"Column {colname} does not exist in source table")
-except Exception as e:
-    # Log failure and exit
-    now_iso = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
-    log_activity(
-        process_name=PROCESS_NAME,
-        source_table=SOURCE_TABLE,
-        target_table=CLONE_TABLE,
-        encrypted_columns=",".join(PII_COLUMNS),
-        key_file="",
-        status="FAILED",
-        timestamp=now_iso,
-        user=USER
-    )
-    raise RuntimeError(f"ERROR: {e}")
+def generate_aes256_key():
+    # Generate a 32-byte (256-bit) random key
+    return os.urandom(32)
 
-# -------------------- STEP 2: DROP AND RECREATE CLONE TABLE --------------------
-try:
-    spark.sql(f"DROP TABLE IF EXISTS {CLONE_TABLE}")
-    spark.sql(f"""
-        CREATE TABLE {CLONE_TABLE}
-        USING DELTA
-        AS SELECT * FROM {SOURCE_TABLE}
-    """)
-except Exception as e:
-    now_iso = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
-    log_activity(
-        process_name=PROCESS_NAME,
-        source_table=SOURCE_TABLE,
-        target_table=CLONE_TABLE,
-        encrypted_columns=",".join(PII_COLUMNS),
-        key_file="",
-        status="FAILED",
-        timestamp=now_iso,
-        user=USER
-    )
-    raise RuntimeError(f"ERROR: Unable to create clone table: {e}")
+def base64_encode_key(key_bytes):
+    # Return base64-encoded string
+    return base64.b64encode(key_bytes).decode("utf-8")
 
-# -------------------- STEP 3: GENERATE ENCRYPTION KEY AND SAVE TO JSON --------------------
-key_bytes = get_random_bytes(32)  # 256 bits
-iv_bytes = get_random_bytes(16)   # 128 bits for CBC
-key_b64 = base64.b64encode(key_bytes).decode('utf-8')
-iv_b64 = base64.b64encode(iv_bytes).decode('utf-8')
-current_dt = datetime.now().strftime("%Y%m%d_%H%M%S")
-created_at_iso = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
-key_file_name = f"encryption_key_{current_dt}.json"
-key_file_path = f"{VOLUME_PATH}/{key_file_name}"
-encryption_key_json = {
-    "algorithm": ALGORITHM,
-    "key": key_b64,
-    "iv": iv_b64,
-    "created_at": created_at_iso
-}
-try:
-    dbutils.fs.put(f"dbfs:{key_file_path}", json.dumps(encryption_key_json), overwrite=True)
-except Exception as e:
-    now_iso = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
-    log_activity(
-        process_name=PROCESS_NAME,
-        source_table=SOURCE_TABLE,
-        target_table=CLONE_TABLE,
-        encrypted_columns=",".join(PII_COLUMNS),
-        key_file=key_file_path,
-        status="FAILED",
-        timestamp=now_iso,
-        user=USER
-    )
-    raise RuntimeError(f"ERROR: Unable to write encryption key file to {key_file_path}: {e}")
+def get_current_utc_iso():
+    # Return current UTC time in ISO 8601 format
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
-# -------------------- STEP 4: DEFINE ENCRYPTION UDF --------------------
-def pad(s):
-    # PKCS7 padding for AES block size 16
-    pad_len = 16 - (len(s.encode('utf-8')) % 16)
-    return s + chr(pad_len) * pad_len
+def get_key_json_path():
+    # Compose key file path with UTC timestamp
+    ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    return f"{VOLUME_PATH}/encryption_key_{ts}.json"
 
-def encrypt_aes_256_cbc(plaintext, key, iv):
+def pad_pkcs7(data):
+    # Pad data to 16 bytes (AES block size)
+    padder = padding.PKCS7(128).padder()
+    padded = padder.update(data.encode("utf-8")) + padder.finalize()
+    return padded
+
+def aes256_encrypt(plaintext, key):
+    # Encrypt a string using AES-256-CBC with random IV, return base64(iv + ciphertext)
     if plaintext is None:
         return None
     if not isinstance(plaintext, str):
-        plaintext = str(plaintext)
+        raise ValueError("Encryption failed for column: value is not string")
+    iv = os.urandom(16)
+    cipher = Cipher(algorithms.AES(key), modes.CBC(iv), backend=default_backend())
+    encryptor = cipher.encryptor()
+    padded = pad_pkcs7(plaintext)
+    ct = encryptor.update(padded) + encryptor.finalize()
+    return base64.b64encode(iv + ct).decode("utf-8")
+
+def save_key_json(key_bytes, algo, path):
+    # Save key as JSON file with metadata
+    if algo != "AES-256":
+        raise ValueError(f"Unsupported encryption algorithm: {algo}")
+    key_b64 = base64_encode_key(key_bytes)
+    key_json = {
+        "key": key_b64,
+        "algorithm": algo,
+        "created_at": get_current_utc_iso()
+    }
     try:
-        cipher = AES.new(key, AES.MODE_CBC, iv)
-        padded = pad(plaintext)
-        encrypted = cipher.encrypt(padded.encode('utf-8'))
-        return base64.b64encode(encrypted).decode('utf-8')
-    except Exception:
-        return None
+        with open(path, "w") as f:
+            json.dump(key_json, f)
+    except Exception as e:
+        raise IOError(f"Unable to write encryption key file to {VOLUME_PATH}: {str(e)}")
+    return key_json
 
-encrypt_udf = udf(lambda x: encrypt_aes_256_cbc(x, key_bytes, iv_bytes), StringType())
+def log_process(status, key_file, error_message=None):
+    # Log process to pii_encryption_log table
+    now = get_current_utc_iso()
+    encrypted_columns = ",".join(PII_COLS)
+    log_row = [(PROCESS_NAME, f"{SCHEMA}.customer_360_raw", f"{SCHEMA}.customer_360_raw_clone", encrypted_columns, key_file, status, now, USER)]
+    schema = StructType([
+        StructField("process_name", StringType(), True),
+        StructField("source_table", StringType(), True),
+        StructField("target_table", StringType(), True),
+        StructField("encrypted_columns", StringType(), True),
+        StructField("key_file", StringType(), True),
+        StructField("status", StringType(), True),
+        StructField("timestamp", StringType(), True),
+        StructField("user", StringType(), True),
+    ])
+    log_df = spark.createDataFrame(log_row, schema=schema)
+    log_df.write.format("delta").mode("append").saveAsTable(LOG_TABLE)
+    if status == "failed" and error_message:
+        print(f"Process failed: {error_message}")
 
-# -------------------- STEP 5: ENCRYPT PII COLUMNS IN CLONE TABLE --------------------
-try:
-    df_clone = spark.table(CLONE_TABLE)
-    df_encrypted = df_clone
-    for colname in PII_COLUMNS:
-        df_encrypted = df_encrypted.withColumn(colname, encrypt_udf(col(colname)))
-    # Ensure column count matches schema before overwrite
-    if len(df_encrypted.columns) != len(df_clone.columns):
-        raise Exception("Column count mismatch after encryption")
-    df_encrypted.write.format("delta").mode("overwrite").option("overwriteSchema", "true").saveAsTable(CLONE_TABLE)
-except Exception as e:
-    now_iso = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
-    log_activity(
-        process_name=PROCESS_NAME,
-        source_table=SOURCE_TABLE,
-        target_table=CLONE_TABLE,
-        encrypted_columns=",".join(PII_COLUMNS),
-        key_file=key_file_path,
-        status="FAILED",
-        timestamp=now_iso,
-        user=USER
-    )
-    raise RuntimeError(f"ERROR: Unable to write to target table {CLONE_TABLE}: {e}")
-
-# -------------------- STEP 6: VALIDATE ENCRYPTED DATA FORMAT --------------------
-def is_base64(s):
-    if s is None:
-        return True
+# ----------------------------------------
+# Main Encryption Process
+# ----------------------------------------
+def main():
+    key_file_path = None
     try:
-        return base64.b64encode(base64.b64decode(s)) == s.encode()
-    except Exception:
-        return False
+        # Step 1: Drop clone table if exists
+        try:
+            spark.sql(f"DROP TABLE IF EXISTS {CLONE_TABLE}")
+        except Exception as e:
+            # Log and continue (table may not exist)
+            pass
 
-sample_rows = spark.table(CLONE_TABLE).select(*PII_COLUMNS).limit(100).collect()
-for row in sample_rows:
-    for colname in PII_COLUMNS:
-        val = row[colname]
-        if val is not None and not is_base64(val):
-            now_iso = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
-            log_activity(
-                process_name=PROCESS_NAME,
-                source_table=SOURCE_TABLE,
-                target_table=CLONE_TABLE,
-                encrypted_columns=",".join(PII_COLUMNS),
-                key_file=key_file_path,
-                status="FAILED",
-                timestamp=now_iso,
-                user=USER
-            )
-            raise RuntimeError(f"ERROR: Encrypted value in {colname} is not base64-encoded")
+        # Step 2: Create clone as replica of source
+        try:
+            spark.sql(f"CREATE TABLE {CLONE_TABLE} AS SELECT * FROM {SRC_TABLE}")
+        except AnalysisException as e:
+            # Source table missing
+            log_process("failed", "", f"Source table {SCHEMA}.customer_360_raw does not exist")
+            raise RuntimeError(f"Source table {SCHEMA}.customer_360_raw does not exist")
+        except Exception as e:
+            log_process("failed", "", f"Failed to create clone table: {str(e)}")
+            raise
 
-# -------------------- STEP 7: LOG SUCCESS --------------------
-log_activity(
-    process_name=PROCESS_NAME,
-    source_table=SOURCE_TABLE,
-    target_table=CLONE_TABLE,
-    encrypted_columns=",".join(PII_COLUMNS),
-    key_file=key_file_path,
-    status="SUCCESS",
-    timestamp=created_at_iso,
-    user=USER
-)
+        # Step 3: Generate encryption key and save as JSON
+        key = generate_aes256_key()
+        key_file_path = get_key_json_path()
+        try:
+            save_key_json(key, ENCRYPTION_ALGO, key_file_path)
+        except Exception as e:
+            log_process("failed", key_file_path, str(e))
+            raise
 
-# -------------------- STEP 8: VALIDATION QUERY (CTE) --------------------
-# Block comment: CTE to check for any non-base64 values in encrypted columns
-validation_query = f"""
-WITH encrypted_check AS (
-  SELECT
-    id,
-    name,
-    email,
-    phone,
-    zip,
-    CASE
-      WHEN name IS NULL THEN 'NULL'
-      WHEN name RLIKE '^[A-Za-z0-9+/=]+$' THEN 'BASE64'
-      ELSE 'NOT_BASE64'
-    END AS name_base64_check,
-    CASE
-      WHEN email IS NULL THEN 'NULL'
-      WHEN email RLIKE '^[A-Za-z0-9+/=]+$' THEN 'BASE64'
-      ELSE 'NOT_BASE64'
-    END AS email_base64_check,
-    CASE
-      WHEN phone IS NULL THEN 'NULL'
-      WHEN phone RLIKE '^[A-Za-z0-9+/=]+$' THEN 'BASE64'
-      ELSE 'NOT_BASE64'
-    END AS phone_base64_check,
-    CASE
-      WHEN zip IS NULL THEN 'NULL'
-      WHEN zip RLIKE '^[A-Za-z0-9+/=]+$' THEN 'BASE64'
-      ELSE 'NOT_BASE64'
-    END AS zip_base64_check
-  FROM {CLONE_TABLE}
-)
-SELECT
-  COUNT(*) AS total_records,
-  SUM(CASE WHEN name_base64_check != 'BASE64' AND name_base64_check != 'NULL' THEN 1 ELSE 0 END) AS name_not_base64,
-  SUM(CASE WHEN email_base64_check != 'BASE64' AND email_base64_check != 'NULL' THEN 1 ELSE 0 END) AS email_not_base64,
-  SUM(CASE WHEN phone_base64_check != 'BASE64' AND phone_base64_check != 'NULL' THEN 1 ELSE 0 END) AS phone_not_base64,
-  SUM(CASE WHEN zip_base64_check != 'BASE64' AND zip_base64_check != 'NULL' THEN 1 ELSE 0 END) AS zip_not_base64
-FROM encrypted_check
-"""
-validation_result = spark.sql(validation_query)
-validation_result.show()
+        # Step 4: Read clone table and encrypt PII columns
+        df = spark.table(CLONE_TABLE)
+        # Define UDF for encryption
+        def encrypt_udf(val):
+            try:
+                return aes256_encrypt(val, key)
+            except Exception as e:
+                raise ValueError(f"Encryption failed for column: {str(e)}")
+        encrypt_udf_spark = F.udf(encrypt_udf, StringType())
+        encrypted_df = df
+        for col in PII_COLS:
+            encrypted_df = encrypted_df.withColumn(col, encrypt_udf_spark(F.col(col)))
+        # Ensure schema matches before write
+        if encrypted_df.schema != df.schema:
+            log_process("failed", key_file_path, "Schema mismatch after encryption")
+            raise RuntimeError("Schema mismatch after encryption")
+        # Step 5: Overwrite clone table with encrypted data
+        encrypted_df.write.format("delta").mode("overwrite").option("overwriteSchema", True).saveAsTable(CLONE_TABLE)
 
-# ------------------------------------------------------------------------------------
-# End of Databricks PySpark PII Encryption Script
-# ------------------------------------------------------------------------------------
+        # Step 6: Validate key file exists
+        if not os.path.exists(key_file_path):
+            log_process("failed", key_file_path, f"Encryption key file not found: {key_file_path}")
+            raise RuntimeError(f"Encryption key file not found: {key_file_path}")
+
+        # Step 7: Log success
+        log_process("success", key_file_path)
+        print(f"Encryption completed successfully. Key file: {key_file_path}")
+
+    except Exception as e:
+        # Log failure if not already logged
+        if key_file_path:
+            log_process("failed", key_file_path, str(e))
+        else:
+            log_process("failed", "", str(e))
+        raise
+
+# ----------------------------------------
+# Execute Main Process
+# ----------------------------------------
+if __name__ == "__main__":
+    main()
+# ----------------------------------------------------------------------------------------
+# End of script
+# ----------------------------------------------------------------------------------------
