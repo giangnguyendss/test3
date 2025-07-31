@@ -1,0 +1,140 @@
+Feature: Backup and Vacuum Operations for customer_360_raw Table
+
+  The system must efficiently back up the purgo_databricks.purgo_playground.customer_360_raw table as compressed parquet files partitioned by state, and perform a vacuum operation to remove records older than 30 days, ensuring data quality and storage optimization.
+
+  Background:
+    Given the source table is purgo_databricks.purgo_playground.customer_360_raw
+    And the backup destination is the Databricks volume at path "/Volumes/customer_360_raw_backup"
+    And the backup format is parquet with "snappy" compression
+    And the backup files must be partitioned by the "state" column
+    And all columns from the source table must be included in the backup
+    And the vacuum operation must retain only records from the last 30 days (720 hours) based on the "creation_date" column
+    And the vacuum operation must be a hard delete (permanent removal)
+    And all backup and vacuum operations must be logged in purgo_playground.customer_360_raw_backup_log with timestamp, status, operation_type, record_count, and error_message
+    And the backup operation must be a full backup (not incremental)
+    And the backup retention policy is to retain files for 90 days
+
+  Scenario: Successful full backup of customer_360_raw table to compressed parquet partitioned by state
+    Given the customer_360_raw table contains 100,000 records with valid data
+    When the backup PySpark script is executed
+    Then a full backup of all 100,000 records is written as parquet files to "/Volumes/customer_360_raw_backup"
+    And the parquet files are compressed using "snappy"
+    And the files are partitioned by the "state" column
+    And all columns are included in the backup
+    And a log entry is created in customer_360_raw_backup_log with
+      | status  | operation_type | record_count | error_message |
+      | SUCCESS | BACKUP        | 100000       | NULL          |
+
+  Scenario: Successful vacuum operation removes records older than 30 days
+    Given the customer_360_raw table contains records with "creation_date" ranging from 2024-01-01 to 2024-07-01
+    And today is 2024-07-01
+    When the vacuum PySpark script is executed
+    Then only records with "creation_date" >= 2024-06-01 remain in the table
+    And all records with "creation_date" < 2024-06-01 are permanently deleted
+    And a log entry is created in customer_360_raw_backup_log with
+      | status  | operation_type | record_count | error_message |
+      | SUCCESS | VACUUM        | <deleted_count> | NULL        |
+
+  Scenario: Backup operation fails due to missing volume path
+    Given the backup destination path "/Volumes/customer_360_raw_backup" does not exist
+    When the backup PySpark script is executed
+    Then the backup operation fails
+    And no files are written
+    And a log entry is created in customer_360_raw_backup_log with
+      | status  | operation_type | record_count | error_message                |
+      | FAILED  | BACKUP         | 0            | "Backup path does not exist" |
+
+  Scenario: Backup operation fails due to insufficient storage
+    Given the backup destination path "/Volumes/customer_360_raw_backup" has less than 1GB free space
+    And the backup size is estimated to be 10GB
+    When the backup PySpark script is executed
+    Then the backup operation fails
+    And a log entry is created in customer_360_raw_backup_log with
+      | status  | operation_type | record_count | error_message                |
+      | FAILED  | BACKUP         | 0            | "Insufficient storage space" |
+
+  Scenario: Vacuum operation fails due to missing permissions
+    Given the executing user does not have DELETE permission on purgo_playground.customer_360_raw
+    When the vacuum PySpark script is executed
+    Then the vacuum operation fails
+    And no records are deleted
+    And a log entry is created in customer_360_raw_backup_log with
+      | status  | operation_type | record_count | error_message                |
+      | FAILED  | VACUUM         | 0            | "Permission denied"          |
+
+  Scenario Outline: Data validation for backup and vacuum operations
+    Given the customer_360_raw table contains <record_count> records
+    And the backup destination path is <backup_path>
+    And the user has <permission> permission
+    When the <operation> PySpark script is executed
+    Then the operation result is <status>
+    And a log entry is created in customer_360_raw_backup_log with
+      | status  | operation_type | record_count | error_message      |
+      | <status> | <operation_type> | <expected_count> | <error_message> |
+
+    Examples:
+      | record_count | backup_path                        | permission | operation | status   | operation_type | expected_count | error_message                |
+      | 50000        | /Volumes/customer_360_raw_backup   | granted    | BACKUP    | SUCCESS  | BACKUP         | 50000          | NULL                        |
+      | 0            | /Volumes/customer_360_raw_backup   | granted    | BACKUP    | SUCCESS  | BACKUP         | 0              | NULL                        |
+      | 1000         | /Volumes/customer_360_raw_backup   | denied     | VACUUM    | FAILED   | VACUUM         | 0              | "Permission denied"         |
+      | 1000         | /invalid/path                     | granted    | BACKUP    | FAILED   | BACKUP         | 0              | "Backup path does not exist"|
+
+  Scenario: Backup files older than 90 days are deleted as per retention policy
+    Given the backup destination path "/Volumes/customer_360_raw_backup" contains parquet files older than 90 days
+    When the backup retention cleanup script is executed
+    Then all backup files older than 90 days are deleted
+    And a log entry is created in customer_360_raw_backup_log with
+      | status  | operation_type | record_count | error_message |
+      | SUCCESS | RETENTION_CLEANUP | <deleted_count> | NULL      |
+
+  Scenario: Backup operation masks PII columns if required
+    Given the backup configuration specifies masking for "email" and "phone" columns
+    When the backup PySpark script is executed
+    Then the "email" and "phone" columns in the backup parquet files are masked using the format "*****"
+    And all other columns are included as-is
+    And a log entry is created in customer_360_raw_backup_log with
+      | status  | operation_type | record_count | error_message |
+      | SUCCESS | BACKUP         | <record_count> | NULL        |
+
+  Scenario: Backup operation is scheduled to run daily at 02:00 UTC
+    Given the backup schedule is configured for daily execution at 02:00 UTC
+    When the scheduled time is reached
+    Then the backup PySpark script is triggered automatically
+    And the backup operation completes as per requirements
+
+  Scenario: Vacuum operation is scheduled to run weekly at 03:00 UTC
+    Given the vacuum schedule is configured for weekly execution at 03:00 UTC
+    When the scheduled time is reached
+    Then the vacuum PySpark script is triggered automatically
+    And the vacuum operation completes as per requirements
+
+  Scenario: Backup operation includes all columns and preserves data types
+    Given the customer_360_raw table contains columns with the following data types:
+      | column               | type    |
+      | id                   | bigint  |
+      | name                 | string  |
+      | email                | string  |
+      | phone                | string  |
+      | company              | string  |
+      | job_title            | string  |
+      | address              | string  |
+      | city                 | string  |
+      | state                | string  |
+      | country              | string  |
+      | industry             | string  |
+      | account_manager      | string  |
+      | creation_date        | date    |
+      | last_interaction_date| date    |
+      | purchase_history     | string  |
+      | notes                | string  |
+      | zip                  | string  |
+    When the backup PySpark script is executed
+    Then the parquet files contain all columns with the same data types as the source table
+
+  Scenario: Backup operation fails if source table is empty
+    Given the customer_360_raw table contains 0 records
+    When the backup PySpark script is executed
+    Then the backup operation completes with status SUCCESS
+    And a log entry is created in customer_360_raw_backup_log with
+      | status  | operation_type | record_count | error_message |
+      | SUCCESS | BACKUP         | 0            | NULL          |
