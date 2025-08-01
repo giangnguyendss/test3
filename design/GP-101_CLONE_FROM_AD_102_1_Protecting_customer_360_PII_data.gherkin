@@ -7,175 +7,136 @@ Feature: Encrypt PII columns in purgo_playground.customer_360_raw_clone and save
   Background:
     Given the Unity Catalog is "purgo_databricks"
     And the schema is "purgo_playground"
-    And the source table is "purgo_playground.customer_360_raw"
-    And the target table is "purgo_playground.customer_360_raw_clone"
-    And the encryption key JSON file location is "/Volumes/agilisium_playground/purgo_playground/de_dq"
+    And the source table is "customer_360_raw"
+    And the target clone table is "customer_360_raw_clone"
     And the PII columns to encrypt are "name", "email", "phone", "zip"
-    And the encryption key file must be named "encryption_key_<current_datetime>.json"
-    And the encryption algorithm is "AES-256" (symmetric, reversible)
-    And the encryption key must be randomly generated per run and saved in the JSON file with fields: "key", "algorithm", "created_at"
-    And the process must be a full-table operation (not incremental)
-    And all non-PII columns must remain unchanged
+    And the encryption key file location is "/Volumes/agilisium_playground/purgo_playground/de_dq"
+    And the encryption key file name format is "encryption_key_<current_datetime>.json" where <current_datetime> is in "yyyyMMdd_HHmmss" format
+    And the encryption algorithm is "AES-256-GCM"
+    And the encryption key is a randomly generated 256-bit (32-byte) base64-encoded string
+    And the key JSON file must contain the key in the format: {"encryption_key": "<base64_key>"}
+    And all non-PII columns must remain unaltered in the clone table
 
   Scenario: Drop and recreate the clone table before encryption
     Given the table "purgo_playground.customer_360_raw_clone" exists
     When the encryption process starts
     Then the table "purgo_playground.customer_360_raw_clone" should be dropped
-    And a new table "purgo_playground.customer_360_raw_clone" should be created as a replica of "purgo_playground.customer_360_raw"
-    And the schema of "purgo_playground.customer_360_raw_clone" must match "purgo_playground.customer_360_raw"
+    And a new table "purgo_playground.customer_360_raw_clone" should be created as a replica of "purgo_playground.customer_360_raw" with identical schema and data
 
   Scenario: Clone table does not exist before encryption
     Given the table "purgo_playground.customer_360_raw_clone" does not exist
     When the encryption process starts
-    Then a new table "purgo_playground.customer_360_raw_clone" should be created as a replica of "purgo_playground.customer_360_raw"
-    And the schema of "purgo_playground.customer_360_raw_clone" must match "purgo_playground.customer_360_raw"
+    Then a new table "purgo_playground.customer_360_raw_clone" should be created as a replica of "purgo_playground.customer_360_raw" with identical schema and data
 
-  Scenario Outline: Encrypt PII columns and load encrypted data to clone table (happy path)
-    Given the table "purgo_playground.customer_360_raw_clone" exists and contains data
-    And the encryption key is generated and stored in "<key_file_path>"
+  Scenario: Generate and save encryption key as JSON
+    When the encryption process starts
+    Then a new 256-bit (32-byte) random encryption key should be generated
+    And the key should be base64-encoded
+    And a JSON file named "encryption_key_<current_datetime>.json" should be created in "/Volumes/agilisium_playground/purgo_playground/de_dq"
+    And the JSON file should contain the key in the format: {"encryption_key": "<base64_key>"}
+    And the file should be accessible and readable after creation
+
+  Scenario Outline: Encrypt PII columns in the clone table (happy path)
+    Given the table "purgo_playground.customer_360_raw_clone" exists and contains at least one row
+    And the "<column>" column contains the value "<original_value>"
     When the encryption process is executed
-    Then the columns "name", "email", "phone", "zip" in "purgo_playground.customer_360_raw_clone" must be encrypted using AES-256
-    And the encrypted values must be non-null if the original value was non-null
-    And the encrypted values must be different from the original plaintext values
-    And all other columns must remain unchanged
-    And the encryption key JSON file "<key_file_path>" must exist in "/Volumes/agilisium_playground/purgo_playground/de_dq"
-    And the JSON file must contain fields: "key" (base64-encoded string), "algorithm" ("AES-256"), "created_at" (ISO 8601 UTC timestamp)
-    And the process status must be "success"
+    Then the "<column>" column value should be replaced with an AES-256-GCM encrypted and base64-encoded string
+    And the encrypted value should not match the original value "<original_value>"
+    And the encrypted value should be a non-null, non-empty string
+    And all other columns in the row should remain unchanged
 
     Examples:
-      | key_file_path                                                      |
-      | /Volumes/agilisium_playground/purgo_playground/de_dq/encryption_key_20240730T120000Z.json |
+      | column | original_value         |
+      | name   | John Doe              |
+      | email  | john.doe@email.com    |
+      | phone  | +1-555-123-4567       |
+      | zip    | 90210                 |
 
-  Scenario Outline: Validate encryption key JSON file format and content
-    Given the encryption key JSON file "<key_file_path>" is created
-    When the file is read
-    Then the JSON must contain a "key" field with a 44-character base64 string
-    And the "algorithm" field must be "AES-256"
-    And the "created_at" field must be a valid ISO 8601 UTC timestamp
+  Scenario: Non-PII columns remain unaltered after encryption
+    Given the table "purgo_playground.customer_360_raw_clone" contains a row with
+      | id | name     | email               | phone         | company      | zip   |
+      | 1  | Jane Doe | jane.doe@email.com  | 555-987-6543  | Acme Corp    | 10001 |
+    When the encryption process is executed
+    Then the "company" column value should remain "Acme Corp"
+    And the "id" column value should remain 1
+
+  Scenario: Null values in PII columns are handled correctly
+    Given the table "purgo_playground.customer_360_raw_clone" contains a row with
+      | id | name | email | phone | zip   |
+      | 2  | null | null  | null  | null  |
+    When the encryption process is executed
+    Then the "name" column value should remain null
+    And the "email" column value should remain null
+    And the "phone" column value should remain null
+    And the "zip" column value should remain null
+
+  Scenario Outline: Validation - Encrypted values are not in plaintext and are base64-encoded
+    Given the table "purgo_playground.customer_360_raw_clone" contains a row with "<column>" = "<original_value>"
+    When the encryption process is executed
+    Then the "<column>" value should not contain "<original_value>"
+    And the "<column>" value should match the regex "^[A-Za-z0-9+/=]+$" (base64 format)
 
     Examples:
-      | key_file_path                                                      |
-      | /Volumes/agilisium_playground/purgo_playground/de_dq/encryption_key_20240730T120000Z.json |
+      | column | original_value         |
+      | name   | Alice Smith           |
+      | email  | alice.smith@email.com |
+      | phone  | 123-456-7890          |
+      | zip    | 12345                 |
 
-  Scenario: Handle null values in PII columns
-    Given the table "purgo_playground.customer_360_raw_clone" contains rows with null values in PII columns
-    When the encryption process is executed
-    Then the encrypted columns "name", "email", "phone", "zip" must remain null where the original value was null
-
-  Scenario Outline: Error when source table does not exist
+  Scenario: Error - Source table does not exist
     Given the table "purgo_playground.customer_360_raw" does not exist
+    When the encryption process starts
+    Then the process should fail with error message "Source table purgo_playground.customer_360_raw does not exist."
+
+  Scenario: Error - Unable to write encryption key file
+    Given the encryption key file location "/Volumes/agilisium_playground/purgo_playground/de_dq" is not writable
+    When the encryption process attempts to save the key file
+    Then the process should fail with error message "Unable to write encryption key file to /Volumes/agilisium_playground/purgo_playground/de_dq."
+
+  Scenario: Error - Encryption key generation fails
+    Given the random key generation process fails
+    When the encryption process starts
+    Then the process should fail with error message "Encryption key generation failed."
+
+  Scenario: Error - Encryption of PII column fails
+    Given the encryption library throws an exception during encryption of the "email" column
     When the encryption process is executed
-    Then the process must fail with error message "Source table purgo_playground.customer_360_raw does not exist"
-    And the process status must be "failed"
+    Then the process should fail with error message "Encryption failed for column: email."
 
-    Examples:
-      | error_message                                               |
-      | Source table purgo_playground.customer_360_raw does not exist |
+  Scenario: Idempotency - Re-running the process overwrites previous clone and key
+    Given the table "purgo_playground.customer_360_raw_clone" exists with previously encrypted data
+    And a previous encryption key file exists in "/Volumes/agilisium_playground/purgo_playground/de_dq"
+    When the encryption process is re-executed
+    Then the table "purgo_playground.customer_360_raw_clone" should be dropped and recreated as a fresh clone
+    And all PII columns should be re-encrypted with a new key
+    And a new encryption key file should be generated with the current datetime in the filename
 
-  Scenario Outline: Error when unable to write encryption key JSON file
-    Given the encryption key is generated
-    And the volume location "/Volumes/agilisium_playground/purgo_playground/de_dq" is not writable
-    When the process attempts to write the encryption key JSON file
-    Then the process must fail with error message "Unable to write encryption key file to /Volumes/agilisium_playground/purgo_playground/de_dq"
-    And the process status must be "failed"
+  Scenario: Key file naming convention validation
+    When the encryption process is executed at "2024-07-30 14:23:45"
+    Then the encryption key file should be named "encryption_key_20240730_142345.json"
+    And the file should exist in "/Volumes/agilisium_playground/purgo_playground/de_dq"
 
-    Examples:
-      | error_message                                                                 |
-      | Unable to write encryption key file to /Volumes/agilisium_playground/purgo_playground/de_dq |
-
-  Scenario: Error when encryption fails for a column
-    Given the encryption key is generated
-    And the table "purgo_playground.customer_360_raw_clone" contains invalid data in the "email" column (e.g., binary data)
+  Scenario: Key file content validation
     When the encryption process is executed
-    Then the process must fail with error message "Encryption failed for column: email"
-    And the process status must be "failed"
+    Then the encryption key file should contain a single JSON object with the key "encryption_key"
+    And the value should be a 44-character base64-encoded string (for 32 bytes)
+    And the file should not contain any other fields
 
-  Scenario: Validate that only specified PII columns are encrypted
-    Given the encryption process is executed successfully
-    When the data in "purgo_playground.customer_360_raw_clone" is inspected
-    Then only the columns "name", "email", "phone", "zip" must be encrypted
-    And all other columns must remain in plaintext and unchanged
-
-  Scenario: Validate idempotency of encryption process
-    Given the encryption process is executed successfully
-    When the process is executed again
-    Then the table "purgo_playground.customer_360_raw_clone" must be dropped and recreated as a fresh replica
-    And the PII columns must be re-encrypted with a new encryption key
-    And a new encryption key JSON file must be created with a new timestamp
-
-  Scenario: Validate encryption for multiple data types and formats
-    Given the table "purgo_playground.customer_360_raw_clone" contains the following data:
-      | id | name         | email                | phone        | zip     |
-      | 1  | John Smith   | john@acme.com        | 1234567890   | 90001   |
-      | 2  | Jane O'Neil  | jane.oneil@xyz.org   | (555)123-4567| 02139   |
-      | 3  | 李雷         | li.lei@china.cn      | +86-10-1234  | 100000  |
-      | 4  | null         | null                 | null         | null    |
+  Scenario: Data type and format validation for encrypted columns
+    Given the table "purgo_playground.customer_360_raw_clone" contains a row with
+      | id | name     | email               | phone         | zip   |
+      | 3  | Bob Lee  | bob.lee@email.com   | 555-111-2222  | 60606 |
     When the encryption process is executed
-    Then the columns "name", "email", "phone", "zip" must be encrypted for all non-null values
-    And the encrypted values must not match the original values
-    And the null values must remain null
+    Then the "name" column value should be a string of length >= 24
+    And the "email" column value should be a string of length >= 24
+    And the "phone" column value should be a string of length >= 24
+    And the "zip" column value should be a string of length >= 24
 
-  Scenario: Validate process logging in pii_encryption_log table (if enabled)
-    Given the process is configured to log to "purgo_playground.pii_encryption_log"
-    When the encryption process completes
-    Then a log entry must be created with:
-      | process_name     | source_table                        | target_table                         | encrypted_columns           | key_file                                                                 | status   | timestamp           | user      |
-      | pii_encryption   | purgo_playground.customer_360_raw   | purgo_playground.customer_360_raw_clone | name,email,phone,zip        | /Volumes/agilisium_playground/purgo_playground/de_dq/encryption_key_<current_datetime>.json | success  | <current_datetime>  | <user>    |
+  Scenario: All acceptance criteria are met
+    Given the encryption process completes successfully
+    Then the table "purgo_playground.customer_360_raw_clone" should contain encrypted values for all PII columns
+    And the encryption key file should exist in the specified location with correct naming and content
+    And all non-PII columns should remain unchanged
+    And null values in PII columns should remain null
+    And the process should be repeatable and idempotent
 
-  Scenario: Validate process logging in pii_encryption_log table on failure (if enabled)
-    Given the process is configured to log to "purgo_playground.pii_encryption_log"
-    And the encryption process fails with error "Encryption failed for column: phone"
-    When the process completes
-    Then a log entry must be created with:
-      | process_name     | source_table                        | target_table                         | encrypted_columns           | key_file                                                                 | status   | timestamp           | user      |
-      | pii_encryption   | purgo_playground.customer_360_raw   | purgo_playground.customer_360_raw_clone | name,email,phone,zip        | /Volumes/agilisium_playground/purgo_playground/de_dq/encryption_key_<current_datetime>.json | failed   | <current_datetime>  | <user>    |
-
-  Scenario Outline: Validate error for missing encryption key file after process
-    Given the encryption process is executed
-    When the encryption key JSON file "<key_file_path>" does not exist in "/Volumes/agilisium_playground/purgo_playground/de_dq"
-    Then the process status must be "failed"
-    And the error message must be "Encryption key file not found: <key_file_path>"
-
-    Examples:
-      | key_file_path                                                      |
-      | /Volumes/agilisium_playground/purgo_playground/de_dq/encryption_key_20240730T120000Z.json |
-
-  Scenario: Validate that encryption is reversible with saved key
-    Given the encryption process is executed successfully
-    And the encryption key JSON file is available
-    When the encrypted values in "purgo_playground.customer_360_raw_clone" are decrypted using the saved key
-    Then the decrypted values must match the original plaintext values in "purgo_playground.customer_360_raw" for columns "name", "email", "phone", "zip"
-
-  Scenario: Validate that process does not alter schema or data types
-    Given the encryption process is executed
-    When the schema of "purgo_playground.customer_360_raw_clone" is inspected
-    Then the data types of all columns must remain unchanged
-    And the column order must match the source table
-
-  Scenario: Validate process handles empty source table
-    Given the table "purgo_playground.customer_360_raw" exists and is empty
-    When the encryption process is executed
-    Then the table "purgo_playground.customer_360_raw_clone" must be created and remain empty
-    And the encryption key JSON file must still be created
-
-  Scenario: Validate process handles large datasets
-    Given the table "purgo_playground.customer_360_raw" contains more than 1,000,000 rows
-    When the encryption process is executed
-    Then all rows in "purgo_playground.customer_360_raw_clone" must have encrypted PII columns
-    And the process must complete without data loss or truncation
-
-  Scenario: Validate process handles special characters and unicode in PII columns
-    Given the table "purgo_playground.customer_360_raw_clone" contains PII values with special characters and unicode
-    When the encryption process is executed
-    Then the encrypted values must be valid and reversible for all supported character sets
-
-  Scenario: Validate process does not encrypt non-PII columns
-    Given the encryption process is executed
-    When the data in "purgo_playground.customer_360_raw_clone" is compared to "purgo_playground.customer_360_raw" for non-PII columns
-    Then all non-PII columns must be identical in value and type
-
-  Scenario: Validate process fails if encryption algorithm is not supported
-    Given the encryption algorithm is set to "unsupported_algo"
-    When the encryption process is executed
-    Then the process must fail with error message "Unsupported encryption algorithm: unsupported_algo"
-    And the process status must be "failed"
